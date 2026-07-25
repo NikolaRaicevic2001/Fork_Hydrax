@@ -3,14 +3,15 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import PredictiveSampling
+from hydrax.algs import MPPI, PredictiveSampling
 from hydrax.simulation.deterministic import run_interactive
 from hydrax.tasks.pusht import PushT
 
 """
-Run an interactive simulation of the push-T task with predictive sampling.
+Run an interactive simulation of the push-T task.
 """
 
+# Parse command-line arguments
 parser = argparse.ArgumentParser(
     description="Run an interactive simulation of the push-T task."
 )
@@ -19,21 +20,42 @@ parser.add_argument(
     action="store_true",
     help="Whether to use the (experimental) MjWarp backend. (default: False)",
 )
+subparsers = parser.add_subparsers(
+    dest="algorithm", help="Sampling algorithm (choose one)"
+)
+subparsers.add_parser("ps", help="Predictive Sampling")
+subparsers.add_parser("mppi", help="Model Predictive Path Integral Control")
 args = parser.parse_args()
 
 # Define the task (cost and dynamics)
 task = PushT(impl="warp" if args.warp else "jax")
 
-# Set up the controller
-ctrl = PredictiveSampling(
-    task,
-    num_samples=128,
-    noise_level=0.4,
-    num_randomizations=4,
-    plan_horizon=0.5,
-    spline_type="zero",
-    num_knots=6,
-)
+# Set the controller based on command-line arguments
+if args.algorithm == "ps" or args.algorithm is None:
+    print("Running predictive sampling")
+    ctrl = PredictiveSampling(
+        task,
+        num_samples=128,
+        noise_level=0.4,
+        num_randomizations=4,
+        plan_horizon=0.5,
+        spline_type="zero",
+        num_knots=6,
+    )
+elif args.algorithm == "mppi":
+    print("Running MPPI")
+    ctrl = MPPI(
+        task,
+        num_samples=128,
+        noise_level=0.4,
+        temperature=0.0005,
+        num_randomizations=4,
+        plan_horizon=0.5,
+        spline_type="zero",
+        num_knots=6,
+    )
+else:
+    parser.error("Invalid algorithm")
 
 # Define the model used for simulation
 mj_model = deepcopy(task.mj_model)
