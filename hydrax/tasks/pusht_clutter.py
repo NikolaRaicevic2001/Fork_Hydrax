@@ -282,3 +282,13 @@ class ClutterRobotTask(Task):
     def terminal_cost(self, state: mjx.Data) -> jax.Array:
         """Non-ADMM fallback terminal cost; same as `terminal_cost_admm`."""
         return self.terminal_cost_admm(state)
+
+    def make_data(self) -> mjx.Data:
+        """Enough contact slots for the pusher, block, and 3 obstacles.
+
+        `nconmax` is the jax-backend cap, `naconmax` the warp-backend one;
+        the default is too small here and silently drops contacts (seen as
+        broadphase-overflow warnings and a pusher that never moves the
+        block).
+        """
+        return super().make_data(nconmax=64, naconmax=256)
