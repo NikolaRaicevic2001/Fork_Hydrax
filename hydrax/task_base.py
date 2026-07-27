@@ -158,3 +158,101 @@ class Task(ABC):
             A new `mjx.Data` instance for this task.
         """
         return mjx.make_data(self.mj_model, impl=self.model.impl, **kwargs)
+
+
+class ConsensusTask(ABC):
+    """Mixin for tasks that support ADMM object/robot consensus.
+
+    A task combines this with `Task` (e.g. `class MyTask(Task, ConsensusTask)`)
+    to expose the object-level closed-form subproblem, the robot-level
+    ADMM-penalized cost, and the consensus variable that ties them together,
+    so that `hydrax.algs.admm.ADMM` can coordinate the two. Tasks that don't
+    need ADMM are unaffected by this mixin's existence.
+
+    The consensus variable z_t is generic: it might be a contact wrench, an
+    object pose, or something else entirely. `consensus_dim` declares its
+    dimension, and `realized_consensus` extracts it from the robot's rollout
+    state.
+    """
+
+    @property
+    @abstractmethod
+    def consensus_dim(self) -> int:
+        """The dimension of the consensus variable z_t."""
+
+    @abstractmethod
+    def object_dynamics(self, obj_state: jax.Array, w: jax.Array) -> jax.Array:
+        """Closed-form object-side dynamics x^o_{t+1} = f^o(x^o_t, w_t).
+
+        Args:
+            obj_state: The object's configuration x^o_t.
+            w: The object-level consensus decision w^o_t.
+
+        Returns:
+            The next object configuration x^o_{t+1}.
+        """
+
+    @abstractmethod
+    def object_running_cost(
+        self, obj_state: jax.Array, w: jax.Array
+    ) -> jax.Array:
+        """The object-level running cost ℓ_o(x^o_t).
+
+        Includes any effort regularization on the consensus decision w^o_t.
+        """
+
+    @abstractmethod
+    def object_terminal_cost(self, obj_state: jax.Array) -> jax.Array:
+        """The object-level terminal cost ℓ_f(x^o_H)."""
+
+    def object_action_scale(self) -> jax.Array:
+        """Per-dimension scale for the object optimizer's sampled knots.
+
+        Applied before they're treated as the physical consensus decision
+        w^o_t. Defaults to no scaling; override when the sampler's natural
+        units differ substantially across dimensions (e.g. force vs torque).
+        """
+        return jnp.ones(self.consensus_dim)
+
+    @abstractmethod
+    def robot_running_cost(
+        self,
+        state: mjx.Data,
+        control: jax.Array,
+        z_t: jax.Array,
+        dual_t: jax.Array,
+        rho: jax.Array,
+        obj_ref_t: jax.Array,
+    ) -> jax.Array:
+        """The ADMM-penalized robot-level running cost.
+
+        Should combine the robot's own regularization/tracking terms with the
+        ADMM consensus penalty (ρ/2)||A^r(state) - z_t + dual_t||².
+
+        Args:
+            state: The robot's current MJX state x^r_t.
+            control: The control action u^r_t.
+            z_t: The current consensus variable value.
+            dual_t: The current (scaled) dual variable for the robot block.
+            rho: The current ADMM penalty weight (may be adapted online).
+            obj_ref_t: The object planner's current reference x^{o*}_t.
+
+        Returns:
+            The scalar ADMM-penalized running cost.
+        """
+
+    @abstractmethod
+    def robot_terminal_cost(self, state: mjx.Data) -> jax.Array:
+        """The robot-level terminal cost (shared with the object goal)."""
+
+    @abstractmethod
+    def realized_consensus(self, state: mjx.Data) -> jax.Array:
+        """The extraction map A^r: robot state -> realized consensus value."""
+
+    @abstractmethod
+    def object_state_from_robot(self, state: mjx.Data) -> jax.Array:
+        """Extract the object's own configuration from the robot state.
+
+        Reads x^o_t out of the robot's combined MJX state, to seed the
+        object subproblem each real step.
+        """

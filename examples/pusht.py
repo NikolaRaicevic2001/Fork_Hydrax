@@ -3,7 +3,13 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import MPPI, PredictiveSampling
+from hydrax.algs import (
+    ADMM,
+    MPPI,
+    PredictiveSampling,
+    WrenchConsensus,
+    make_object_shim,
+)
 from hydrax.simulation.deterministic import run_interactive
 from hydrax.tasks.pusht import PushT
 
@@ -25,51 +31,114 @@ subparsers = parser.add_subparsers(
 )
 subparsers.add_parser("ps", help="Predictive Sampling")
 subparsers.add_parser("mppi", help="Model Predictive Path Integral Control")
+subparsers.add_parser(
+    "admm", help="ADMM-coordinated object-informed MPPI on a cluttered scene"
+)
 args = parser.parse_args()
 
-# Define the task (cost and dynamics)
-task = PushT(impl="warp" if args.warp else "jax")
+impl = "warp" if args.warp else "jax"
 
-# Set the controller based on command-line arguments
-if args.algorithm == "ps" or args.algorithm is None:
-    print("Running predictive sampling")
-    ctrl = PredictiveSampling(
+if args.algorithm == "admm":
+    print("Running ADMM object-informed MPPI (cluttered scene)")
+    plan_dt = 0.05
+    horizon = 15  # consensus horizon H (steps of plan_dt)
+
+    task = PushT(impl=impl, clutter=True, planning_dt=plan_dt)
+    consensus = WrenchConsensus(max_dual=15.0)
+
+    robot_optimizer = MPPI(
         task,
-        num_samples=128,
+        num_samples=64,
         noise_level=0.4,
-        num_randomizations=4,
-        plan_horizon=0.5,
-        spline_type="zero",
-        num_knots=6,
+        temperature=1.0,
+        plan_horizon=horizon * plan_dt,
+        spline_type="linear",
+        num_knots=4,
+        seed=5,
     )
-elif args.algorithm == "mppi":
-    print("Running MPPI")
-    ctrl = MPPI(
-        task,
-        num_samples=128,
-        noise_level=0.4,
-        temperature=0.0005,
-        num_randomizations=4,
-        plan_horizon=0.5,
+    object_optimizer = MPPI(
+        make_object_shim(task, dt=plan_dt),
+        num_samples=64,
+        noise_level=1.0,
+        temperature=1.0,
+        plan_horizon=horizon * plan_dt,
         spline_type="zero",
-        num_knots=6,
+        num_knots=horizon,
+        seed=5,
+    )
+    ctrl = ADMM(
+        task,
+        robot_optimizer,
+        object_optimizer,
+        consensus,
+        n_admm=12,
+        eps_r=1.0,
+        eps_s=1.0,
+        proximal_weight=0.05,
+        rho_init=1.0,
+        noise_min=0.05,
+        noise_kappa=0.05,
+        noise_max=1.0,
+    )
+
+    mj_model = deepcopy(task.mj_model)
+    mj_model.opt.timestep = 0.002
+    mj_model.opt.iterations = 100
+    mj_model.opt.ls_iterations = 50
+    mj_data = mujoco.MjData(mj_model)
+    mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
+
+    run_interactive(
+        ctrl,
+        mj_model,
+        mj_data,
+        frequency=1.0 / plan_dt,
+        show_traces=False,
     )
 else:
-    parser.error("Invalid algorithm")
+    # Define the task (cost and dynamics)
+    task = PushT(impl=impl)
 
-# Define the model used for simulation
-mj_model = deepcopy(task.mj_model)
-mj_model.opt.timestep = 0.001
-mj_model.opt.iterations = 100
-mj_model.opt.ls_iterations = 50
-mj_data = mujoco.MjData(mj_model)
-mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
+    # Set the controller based on command-line arguments
+    if args.algorithm == "ps" or args.algorithm is None:
+        print("Running predictive sampling")
+        ctrl = PredictiveSampling(
+            task,
+            num_samples=128,
+            noise_level=0.4,
+            num_randomizations=4,
+            plan_horizon=0.5,
+            spline_type="zero",
+            num_knots=6,
+        )
+    elif args.algorithm == "mppi":
+        print("Running MPPI")
+        ctrl = MPPI(
+            task,
+            num_samples=128,
+            noise_level=0.4,
+            temperature=0.0005,
+            num_randomizations=4,
+            plan_horizon=0.5,
+            spline_type="zero",
+            num_knots=6,
+        )
+    else:
+        parser.error("Invalid algorithm")
 
-# Run the interactive simulation
-run_interactive(
-    ctrl,
-    mj_model,
-    mj_data,
-    frequency=50,
-    show_traces=False,
-)
+    # Define the model used for simulation
+    mj_model = deepcopy(task.mj_model)
+    mj_model.opt.timestep = 0.001
+    mj_model.opt.iterations = 100
+    mj_model.opt.ls_iterations = 50
+    mj_data = mujoco.MjData(mj_model)
+    mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
+
+    # Run the interactive simulation
+    run_interactive(
+        ctrl,
+        mj_model,
+        mj_data,
+        frequency=50,
+        show_traces=False,
+    )

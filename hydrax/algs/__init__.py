@@ -1,3 +1,4 @@
+from .admm import ADMM, ConsensusSpace, WrenchConsensus, make_object_shim
 from .cbo import CBO
 from .cem import CEM
 from .dial import DIAL
@@ -8,12 +9,16 @@ from .mtp import MTP
 from .predictive_sampling import PredictiveSampling
 
 __all__ = [
+    "ADMM",
     "CBO",
     "CEM",
+    "ConsensusSpace",
     "MPPI",
     "MTP",
     "PredictiveSampling",
     "Evosax",
     "DIAL",
     "MppiCma",
+    "WrenchConsensus",
+    "make_object_shim",
 ]
