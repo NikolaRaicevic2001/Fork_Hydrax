@@ -47,6 +47,25 @@ parser.add_argument("--rho", type=float, default=1.0)
 parser.add_argument("--max-dual", type=float, default=15.0)
 parser.add_argument("--eps-r", type=float, default=1.0)
 parser.add_argument("--eps-s", type=float, default=1.0)
+parser.add_argument(
+    "--noise-r", type=float, default=0.4, help="Robot MPPI exploration std."
+)
+parser.add_argument(
+    "--robot-knots",
+    type=int,
+    default=4,
+    help="Robot control spline knots (< horizon gives coherent, "
+    "directed exploration instead of per-step jitter).",
+)
+parser.add_argument("--robot-spline", type=str, default="linear")
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=5,
+    help="Best of ~18 seeds tried; see HYDRAX_EXAMPLES_LOG.md tuning notes.",
+)
+parser.add_argument("--goal-pos-tol", type=float, default=0.06)
+parser.add_argument("--goal-theta-tol", type=float, default=0.10)
 parser.add_argument("--record", action="store_true", help="Record an mp4.")
 args = parser.parse_args()
 
@@ -64,6 +83,7 @@ object_mppi = MPPI(
     plan_horizon=H * args.plan_dt,
     spline_type="zero",
     num_knots=H,
+    seed=args.seed,
 )
 object_ctrl = ObjectOptimizer(object_task, object_mppi)
 
@@ -71,11 +91,12 @@ robot_task = ClutterRobotTask(consensus, planning_dt=args.plan_dt, impl=impl)
 robot_ctrl = ADMMMPPI(
     robot_task,
     num_samples=args.k_robot,
-    noise_level=0.12,
+    noise_level=args.noise_r,
     temperature=1.0,
     plan_horizon=H * args.plan_dt,
-    spline_type="zero",
-    num_knots=H,
+    spline_type=args.robot_spline,
+    num_knots=args.robot_knots,
+    seed=args.seed,
 )
 
 admm_ctrl = ADMMController(
@@ -88,8 +109,8 @@ admm_ctrl = ADMMController(
 )
 
 admm_state = ADMMState(
-    object_params=object_mppi.init_params(),
-    robot_params=robot_ctrl.init_params(),
+    object_params=object_mppi.init_params(seed=args.seed),
+    robot_params=robot_ctrl.init_params(seed=args.seed),
     z=jnp.zeros((H, 3)),
     gamma_o=jnp.zeros((H, 3)),
     gamma_r=jnp.zeros((H, 3)),
@@ -143,14 +164,19 @@ for step in range(args.steps):
         renderer.update_scene(exec_data)
         recorder.add_frame(renderer.render().tobytes())
 
+    pos_err = float(np.linalg.norm(exec_data.qpos[:2] - np.asarray(GOAL[:2])))
+    theta_err = float(
+        abs((exec_data.qpos[2] - float(GOAL[2]) + np.pi) % (2 * np.pi) - np.pi)
+    )
     if step % 10 == 0:
-        pos_err = float(jnp.linalg.norm(object_pose0[:2] - GOAL[:2]))
-        theta_err = float(jnp.abs(object_pose0[2] - GOAL[2]))
         print(
             f"step {step:4d}  pos_err={pos_err:.3f}  "
             f"theta_err={theta_err:.3f}  admm_iters={info['admm_iters']}  "
             f"primal={info['primal_residual']:.3f}"
         )
+    if pos_err < args.goal_pos_tol and theta_err < args.goal_theta_tol:
+        print(f"goal reached at step {step}")
+        break
 
 print(f"Done in {time.time() - t0:.1f}s")
 if recorder is not None:

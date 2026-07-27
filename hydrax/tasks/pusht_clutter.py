@@ -291,4 +291,4 @@ class ClutterRobotTask(Task):
         broadphase-overflow warnings and a pusher that never moves the
         block).
         """
-        return super().make_data(nconmax=64, naconmax=256)
+        return super().make_data(nconmax=128, naconmax=1024)
