@@ -212,14 +212,23 @@ else:
     # but nothing ADMM-related is constructed here.
     task = PushT(impl=impl, clutter=(args.robot == "xarm6"), robot=args.robot)
 
+    # xArm6's per-rollout cost is much higher than the point mass's (7 mesh
+    # bodies' worth of convex-convex collision checking vs. 2 spheres/boxes),
+    # vmapped over num_samples*num_randomizations rollouts -- the point
+    # mass's defaults (128 samples * 4 randomizations = 512 parallel
+    # rollouts) were confirmed to exhaust an 11 GB GPU for the arm. Not
+    # tuned for quality, just small enough to actually run.
+    num_samples = 16 if args.robot == "xarm6" else 128
+    num_randomizations = 1 if args.robot == "xarm6" else 4
+
     # Set the controller based on command-line arguments
     if args.algorithm == "ps" or args.algorithm is None:
         print("Running predictive sampling")
         ctrl = PredictiveSampling(
             task,
-            num_samples=128,
+            num_samples=num_samples,
             noise_level=0.4,
-            num_randomizations=4,
+            num_randomizations=num_randomizations,
             plan_horizon=0.5,
             spline_type="zero",
             num_knots=6,
@@ -228,10 +237,10 @@ else:
         print("Running MPPI")
         ctrl = MPPI(
             task,
-            num_samples=128,
+            num_samples=num_samples,
             noise_level=0.4,
             temperature=0.0005,
-            num_randomizations=4,
+            num_randomizations=num_randomizations,
             plan_horizon=0.5,
             spline_type="zero",
             num_knots=6,
