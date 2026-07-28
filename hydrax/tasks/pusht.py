@@ -171,10 +171,23 @@ class PushT(Task, ConsensusTask):
             self.r_r = 0.05
             self.w_ee, self.r0 = 20.0, 0.05
             self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
-            # w_tilt is not given a numeric value in the paper -- untuned,
-            # same order of magnitude as w_align since both are soft
-            # shaping terms on the end-effector pose.
+            # w_tilt/w_tip_z are not given numeric values in the paper --
+            # untuned, same order of magnitude as w_align/w_ee since all are
+            # soft shaping terms on the end-effector pose.
             self.w_tilt = 5.0
+            self.w_tip_z = 50.0
+            # Target tip height for good side contact: the block's own
+            # (fixed) z -- it only translates in x/y and rotates about z,
+            # so its z never changes during simulation, this is read once
+            # here rather than hardcoded. Not `block thickness / 2` from a
+            # z=0 floor as a first-principles calculation would give
+            # (0.02 m, from the block geoms' z half-extent) -- this MJCF's
+            # block actually rests slightly above that (z=0.03, a ~1cm
+            # floor clearance already baked into pusht_clutter.xml, present
+            # before any of this session's changes), so the block's own
+            # position is the physically-correct target, not the idealized
+            # formula.
+            self.tip_target_z = float(mj_model.body("block").pos[2])
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
             self.goal = GOAL
@@ -346,6 +359,18 @@ class PushT(Task, ConsensusTask):
         )
         return jnp.sqrt(roll**2 + pitch**2)
 
+    def _tip_height_err(self, state: mjx.Data) -> jax.Array:
+        """(z_tip - tip_target_z)^2: not in the paper -- an added term to
+        keep the pusher near the block's own mid-height for good side
+        contact, since nothing else in this cost constrains the tip's
+        height at all (approach/align only ever look at xy). Correctly a
+        no-op for `robot="point"`: its `pusher` site sits at the same fixed
+        z as the block by construction, so this is identically zero -- no
+        branch on `self.robot` needed.
+        """
+        z_tip = state.site_xpos[self.trace_site_ids[0], 2]
+        return (z_tip - self.tip_target_z) ** 2
+
     def _ell_r(
         self,
         state: mjx.Data,
@@ -353,7 +378,8 @@ class PushT(Task, ConsensusTask):
         pusher_pos: jax.Array,
         obj_ref: jax.Array,
     ) -> jax.Array:
-        """Robot stage cost ℓ_r: approach + align + tilt (paper eq. 20-22)."""
+        """Robot stage cost ℓ_r: approach + align + tilt (paper eq. 20-22)
+        + tip height (not in the paper, see `_tip_height_err`)."""
         d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
 
@@ -365,7 +391,8 @@ class PushT(Task, ConsensusTask):
         align = self.w_align * jnp.clip(self.gamma0 - cos_angle, 0.0, None)
 
         tilt = self.w_tilt * self._tilt(state)
-        return approach + align + tilt
+        tip_height = self.w_tip_z * self._tip_height_err(state)
+        return approach + align + tilt + tip_height
 
     def robot_running_cost(
         self, state: mjx.Data, control: jax.Array, obj_ref_t: jax.Array
