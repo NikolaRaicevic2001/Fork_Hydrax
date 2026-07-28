@@ -6,7 +6,8 @@ MPPI push-T task (see `oim/tasks/pusht.py`'s `robot="xarm6"` option and
 `oim/models/xarm6_pusht_clutter/`).
 
 **Status: wired into `oim`.** This directory used to be a staging area
-(`Fork_Hydrax/robot_assets/xarm6/`, kept outside `oim/` to avoid colliding
+(`robot_assets/xarm6/` at this repository's root, back when the repository
+was still named `Forked_Hydrax`; kept outside `oim/` to avoid colliding
 with concurrent ADMM restructuring work) and has since been moved here
 wholesale, unedited except for the actuator-type changes documented below --
 its internal layout (`xarm6.xml` + `scene.xml` + `assets/` + `README.md` +
@@ -44,8 +45,9 @@ an xArm6 model (confirmed via
 [google-deepmind/mujoco_menagerie#206](https://github.com/google-deepmind/mujoco_menagerie/issues/206),
 an open, unfulfilled request), and no other reliable ready-made xArm6 MJCF
 turned up. The vendor's own distribution is URDF-only (see
-`Object-Informed-Manipulation/src/mppi_isaac/assets/urdf/xarm6/`, a
-sibling project in this workspace, not part of `Fork_Hydrax`) and doesn't
+`Object-Informed-Manipulation/src/mppi_isaac/assets/urdf/xarm6/` -- a
+*separate* sibling project in this workspace, not this repository, despite
+the now near-identical names) and doesn't
 load into MuJoCo directly -- its mesh paths assume a ROS-package resolver
 mujoco doesn't use (see the `project_xarm6_urdf_to_mjcf_conversion` memory
 for that dead end, kept for reference in case a from-URDF path is revisited).
