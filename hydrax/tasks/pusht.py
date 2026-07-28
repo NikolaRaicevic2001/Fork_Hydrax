@@ -167,13 +167,14 @@ class PushT(Task, ConsensusTask):
                 limit_surface_radius=0.06,
             )
 
-            # Robot-level cost weights (paper eq. 20), minus the tilt term:
-            # neither embodiment currently has an end-effector orientation
-            # term wired into ell_r below (see `_ell_r`'s docstring for the
-            # xArm6 case).
+            # Robot-level cost weights (paper eq. 20).
             self.r_r = 0.05
             self.w_ee, self.r0 = 20.0, 0.05
             self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
+            # w_tilt is not given a numeric value in the paper -- untuned,
+            # same order of magnitude as w_align since both are soft
+            # shaping terms on the end-effector pose.
+            self.w_tilt = 5.0
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
             self.goal = GOAL
@@ -203,7 +204,22 @@ class PushT(Task, ConsensusTask):
         return block_pos - pusher_pos
 
     def running_cost(self, state: mjx.Data, control: jax.Array) -> jax.Array:
-        """The running cost ℓ(xₜ, uₜ) for plain (non-ADMM) MPC."""
+        """The running cost ℓ(xₜ, uₜ) for plain (non-ADMM) MPC.
+
+        For `robot="xarm6"`, this reuses the same approach/align/tilt
+        shaping terms as the ADMM robot-level cost (`_ell_r`), with the
+        fixed `self.goal` standing in for the object planner's reference
+        (there is no separate object-level plan in plain MPC) -- otherwise
+        the psi_tilt fix in `_ell_r` would have no visible effect here,
+        since plain MPC never calls `robot_running_cost`. `robot="point"`
+        keeps the original sensor-based formula untouched.
+        """
+        if self.robot == "xarm6":
+            pose = self._block_pose(state)
+            pusher_pos = self._pusher_pos(state)
+            ell_o = se2_distance_sq(pose, self.goal, self.q_pos, self.q_theta)
+            ell_r = self._ell_r(state, pose, pusher_pos, self.goal)
+            return ell_o + ell_r
         position_cost = jnp.sum(jnp.square(self._get_position_err(state)))
         orientation_cost = jnp.sum(jnp.square(self._get_orientation_err(state)))
         close_cost = jnp.sum(jnp.square(self._close_to_block_err(state)))
@@ -314,19 +330,30 @@ class PushT(Task, ConsensusTask):
         tau = r[0] * f[1] - r[1] * f[0]
         return jnp.array([f[0], f[1], tau])
 
-    def _ell_r(
-        self, pose: jax.Array, pusher_pos: jax.Array, obj_ref: jax.Array
-    ) -> jax.Array:
-        """Robot stage cost ℓ_r: approach + push alignment (paper eq. 20-21).
+    def _tilt(self, state: mjx.Data) -> jax.Array:
+        """psi_tilt(R_ee): end-effector tilt from vertical (paper eq. 22).
 
-        Does not include the paper's `psi_tilt` (eq. 22) end-effector
-        orientation term for either embodiment yet -- correctly zero for
-        `robot="point"` (no end-effector orientation DOF at all), but per
-        `docs/admm_paper_mapping.md`'s deviation 4, this "should be restored
-        for the xArm6" (its wrist orientation is a real physical quantity).
-        Left out here since it's not needed for a basic working pipeline;
-        worth adding once this is being tuned for real pushing quality.
+        Squared-sum of the roll/pitch angles extracted from the end-effector
+        site's world-frame rotation matrix. Correctly zero for `robot=
+        "point"`: its `pusher` site has no orientation DOF at all, so its
+        rotation matrix is always identity (roll=pitch=0) -- no branch on
+        `self.robot` is needed for that reason.
         """
+        r_mat = state.site_xmat[self.trace_site_ids[0]]
+        roll = jnp.arctan2(r_mat[2, 1], r_mat[2, 2])
+        pitch = jnp.arctan2(
+            -r_mat[2, 0], jnp.sqrt(r_mat[2, 1] ** 2 + r_mat[2, 2] ** 2)
+        )
+        return jnp.sqrt(roll**2 + pitch**2)
+
+    def _ell_r(
+        self,
+        state: mjx.Data,
+        pose: jax.Array,
+        pusher_pos: jax.Array,
+        obj_ref: jax.Array,
+    ) -> jax.Array:
+        """Robot stage cost ℓ_r: approach + align + tilt (paper eq. 20-22)."""
         d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
 
@@ -336,7 +363,9 @@ class PushT(Task, ConsensusTask):
             jnp.linalg.norm(to_object) * jnp.linalg.norm(to_ref) + 1e-6
         )
         align = self.w_align * jnp.clip(self.gamma0 - cos_angle, 0.0, None)
-        return approach + align
+
+        tilt = self.w_tilt * self._tilt(state)
+        return approach + align + tilt
 
     def robot_running_cost(
         self, state: mjx.Data, control: jax.Array, obj_ref_t: jax.Array
@@ -349,7 +378,7 @@ class PushT(Task, ConsensusTask):
         pose = self._block_pose(state)
         pusher_pos = self._pusher_pos(state)
         ell_o = se2_distance_sq(pose, self.goal, self.q_pos, self.q_theta)
-        ell_r = self._ell_r(pose, pusher_pos, obj_ref_t)
+        ell_r = self._ell_r(state, pose, pusher_pos, obj_ref_t)
         ell_c = se2_distance_sq(pose, obj_ref_t, self.q_pos, self.q_theta)
         return self.r_r * jnp.sum(control**2) + ell_o + ell_r + ell_c
 

@@ -210,7 +210,18 @@ else:
     # XARM6_ADMM_INTEGRATION_PLAN.md's "Validation staging" section):
     # xarm6 still needs clutter=True (there's no non-cluttered xarm6 scene),
     # but nothing ADMM-related is constructed here.
-    task = PushT(impl=impl, clutter=(args.robot == "xarm6"), robot=args.robot)
+    # For xarm6, coarsen the planner's own internal timestep (the composed
+    # scene's baked-in 0.01s otherwise gives 50 substeps per 0.5s rollout;
+    # 0.05s gives 10 -- confirmed ~5x fewer substeps directly, the single
+    # biggest speed lever after mesh simplification, see xarm6.xml). Only
+    # the *planning* model changes; execution below still steps at 0.001s.
+    planning_dt = 0.05 if args.robot == "xarm6" else None
+    task = PushT(
+        impl=impl,
+        clutter=(args.robot == "xarm6"),
+        robot=args.robot,
+        planning_dt=planning_dt,
+    )
 
     # xArm6's per-rollout cost is much higher than the point mass's (7 mesh
     # bodies' worth of convex-convex collision checking vs. 2 spheres/boxes),
