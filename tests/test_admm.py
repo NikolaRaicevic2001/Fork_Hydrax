@@ -15,8 +15,8 @@ PLAN_DT = 0.05
 HORIZON = 15
 
 
-def _build_task() -> PushT:
-    return PushT(clutter=True, planning_dt=PLAN_DT)
+def _build_task(robot: str = "point") -> PushT:
+    return PushT(clutter=True, planning_dt=PLAN_DT, robot=robot)
 
 
 def _build_admm(
@@ -183,6 +183,28 @@ def test_admm_jit() -> None:
     exit inside the loop cannot be traced under `jax.jit`).
     """
     task = _build_task()
+    ctrl = _build_admm(task)
+    params = ctrl.init_params()
+    state = task.make_data()
+
+    new_params, rollouts = jax.jit(ctrl.optimize)(state, params)
+
+    assert jnp.all(jnp.isfinite(rollouts.costs))
+    assert jnp.all(jnp.isfinite(new_params.mean))
+    assert jnp.all(jnp.isfinite(new_params.z))
+
+
+def test_admm_jit_xarm6() -> None:
+    """Same regression test as `test_admm_jit`, but for `robot="xarm6"`.
+
+    The one thing that changes for this embodiment is a real
+    `realized_consensus` (contact-force extraction, see its docstring in
+    `hydrax/tasks/pusht.py` for the verification done and its caveats) in
+    place of the `qfrc_constraint` trick -- this is the first test that
+    exercises that path end-to-end under `jax.jit`, inside the full ADMM
+    loop rather than in isolation.
+    """
+    task = _build_task(robot="xarm6")
     ctrl = _build_admm(task)
     params = ctrl.init_params()
     state = task.make_data()

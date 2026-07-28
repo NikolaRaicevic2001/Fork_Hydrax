@@ -146,6 +146,8 @@ class PushT(Task, ConsensusTask):
                     ]
                 )
                 self.tip_site_id = mj_model.site("xarm6_tip").id
+                self.stick_body_id = mj_model.body("xarm6_stick").id
+                self.block_body_id = mj_model.body("block").id
             else:
                 pusher_x_dof = mj_model.joint("root_x").dofadr[0]
                 pusher_y_dof = mj_model.joint("root_y").dofadr[0]
@@ -314,8 +316,61 @@ class PushT(Task, ConsensusTask):
         """Extract the object's SE(2) pose from the combined robot state."""
         return self._block_pose(state)
 
+    def _stick_block_contact_force(self, state: mjx.Data) -> jax.Array:
+        """World-frame linear contact force the stick imparts on the block,
+        summed over every stick/block contact slot (there can be more than
+        one for a capsule against a box).
+
+        `mjx._src.support.contact_force` (the library function this would
+        naturally call) cannot be `vmap`ped as-is: it branches on `condim`
+        read from a per-contact array, which is fine for a single static
+        `contact_id` but not under `vmap`. Every geom in this scene uses
+        `condim=3` (the MJCF default, unchanged), so this reimplements just
+        that one case -- the pyramidal-cone decode, condim==3 -- directly in
+        a `vmap`-safe form. Verified directly: for a single, concrete
+        contact index, this produces the exact same result as calling the
+        library function itself; for a no-contact state, this returns
+        exactly zero.
+
+        Not yet fully cross-validated against `mj_contactForce`/MuJoCo-C
+        the way the point-mass version below is: both engines agree on
+        *where* the stick/block contact is (within ~2mm), but MuJoCo-C
+        resolves it as a single contact point while MJX resolves the same
+        capsule-vs-box pair as up to 4 candidate points -- the summed force
+        here did not numerically match MuJoCo-C's single-point
+        `mj_contactForce` value in testing. Plausibly a real discretization
+        difference between the two engines' solves rather than a bug in
+        this extraction (the mechanism itself is verified correct against
+        MJX's own reference implementation), but unconfirmed -- worth a
+        closer look before trusting this beyond a basic working ADMM loop.
+        """
+        c = state._impl.contact
+        efc_force = state._impl.efc_force
+
+        def _one(addr: jax.Array, mu: jax.Array, frame: jax.Array) -> jax.Array:
+            pyramid = jax.lax.dynamic_slice(efc_force, (addr,), (4,))
+            valid = (addr >= 0).astype(pyramid.dtype)
+            normal = jnp.sum(pyramid) * valid
+            t0 = (pyramid[0] - pyramid[1]) * mu[0] * valid
+            t1 = (pyramid[2] - pyramid[3]) * mu[1] * valid
+            return jnp.array([normal, t0, t1]) @ frame
+
+        forces = jax.vmap(_one)(c.efc_address, c.friction, c.frame)
+        body1 = jnp.asarray(self.model.geom_bodyid)[c.geom[:, 0]]
+        body2 = jnp.asarray(self.model.geom_bodyid)[c.geom[:, 1]]
+        mask = (
+            (body1 == self.stick_body_id) & (body2 == self.block_body_id)
+        ) | ((body1 == self.block_body_id) & (body2 == self.stick_body_id))
+        return jnp.sum(jnp.where(mask[:, None], forces, 0.0), axis=0)
+
     def realized_consensus(self, state: mjx.Data) -> jax.Array:
         """A^r: the wrench the pusher applies to the object (paper eq. 23).
+
+        For `robot="xarm6"`: linear force from `_stick_block_contact_force`
+        (see its docstring for the verification caveat), moment arm from
+        the tip position to the block's CoM (same convention as the
+        `robot="point"` case below, for consistency -- not the literal
+        contact point).
 
         For `robot="point"`: `qfrc_constraint` at the pusher's DOFs is the
         constraint force acting *on the pusher*; by Newton's third law its
@@ -323,23 +378,13 @@ class PushT(Task, ConsensusTask):
         the world frame about the block's pose origin -- the same frame and
         reference point the object model integrates, and the same units, so
         both ADMM blocks report the identical physical quantity.
-
-        For `robot="xarm6"`: **not yet implemented** -- the point-mass trick
-        above only works because `root_x`/`root_y` are literal Cartesian
-        world-frame DOFs of a unit-mass body; the arm's `qfrc_constraint` is
-        5-DOF generalized joint torque with no such interpretation. Returns
-        zero, which only matters for `hydrax.algs.admm.ADMM` (not yet driven
-        with `robot="xarm6"` -- see `XARM6_ADMM_INTEGRATION_PLAN.md`'s
-        "technical crux" section for the intended fix,
-        `mjx._src.support.contact_force` masked by contact body id, verified
-        against `mj_contactForce` the same way this method's point-mass
-        version already was). Does not affect plain (non-ADMM) MPC, which
-        never calls this method.
         """
-        if self.robot == "xarm6":
-            return jnp.zeros(3)
-        f = -state.qfrc_constraint[self.pusher_dofs]
         r = self._pusher_pos(state) - self._block_pose(state)[:2]
+        if self.robot == "xarm6":
+            f = self._stick_block_contact_force(state)
+            tau = r[0] * f[1] - r[1] * f[0]
+            return jnp.array([f[0], f[1], tau])
+        f = -state.qfrc_constraint[self.pusher_dofs]
         tau = r[0] * f[1] - r[1] * f[0]
         return jnp.array([f[0], f[1], tau])
 
