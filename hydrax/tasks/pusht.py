@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 import jax
 import jax.numpy as jnp
@@ -30,6 +30,17 @@ CLUTTER_OBSTACLES = ObstacleField(
     ]
 )
 
+# xArm6 base placement (x, y, yaw about z), ground-mounted (z is not a free
+# parameter -- the base sits directly on the floor, matching a real
+# floor/table-mounted arm). Chosen by sweeping candidate offsets and joint
+# configurations in models/xarm6_pusht_clutter/verify_reach.py and picking
+# the one with the best worst-case reach across the block/goal/obstacle
+# footprint (verified: every point in the workspace is reachable within a
+# few cm, with the stick tip's own excluded self-collisions -- see
+# models/xarm6/xarm6.xml -- otherwise unaffected by this placement).
+XARM6_BASE_POS = (0.2, 0.75)
+XARM6_BASE_YAW_DEG = -90.0
+
 
 class PushT(Task, ConsensusTask):
     """Push a T-shaped block to a desired pose, optionally through clutter.
@@ -42,6 +53,18 @@ class PushT(Task, ConsensusTask):
     object model) and additionally implements `ConsensusTask`, so it can be
     driven by `hydrax.algs.admm.ADMM`. The object-level subproblem is
     delegated to `hydrax.objects.PlanarPushingObject`.
+
+    `robot` selects the embodiment used for the clutter scene: `"point"`
+    (default) is the original free 2-DOF point-mass pusher
+    (`models/pusht_clutter/pusht_clutter.xml`); `"xarm6"` swaps that for a
+    real 6-DoF UFACTORY xArm6 with a rigid pushing-stick end-effector
+    (`models/xarm6_pusht_clutter/`, `models/xarm6/xarm6.xml`), ground-mounted
+    at `XARM6_BASE_POS`. Only meaningful with `clutter=True` -- there is no
+    non-cluttered xArm6 scene. The two embodiments share every method below
+    except the handful that read the "pusher position" or realize the
+    contact wrench, which branch on `self.robot`; everything about the
+    object side (goal, obstacles, limit-surface dynamics/costs) is exactly
+    the same physics regardless of which robot is pushing.
     """
 
     def __init__(
@@ -49,6 +72,7 @@ class PushT(Task, ConsensusTask):
         impl: str = "jax",
         clutter: bool = False,
         planning_dt: Optional[float] = None,
+        robot: Literal["point", "xarm6"] = "point",
     ) -> None:
         """Load the MuJoCo model and set task parameters.
 
@@ -58,15 +82,48 @@ class PushT(Task, ConsensusTask):
                 and enable the ADMM `ConsensusTask` methods.
             planning_dt: If given, overrides the model's simulation timestep.
                 Used to run the planner at a coarser rate than execution.
+            robot: Which embodiment pushes the block in the clutter scene,
+                `"point"` (default, the original free 2-DOF pusher) or
+                `"xarm6"` (a real 6-DoF arm). Ignored (must be `"point"`)
+                when `clutter=False`.
         """
+        if robot not in ("point", "xarm6"):
+            raise ValueError(f"robot must be 'point' or 'xarm6', got {robot!r}")
+        if robot == "xarm6" and not clutter:
+            raise ValueError("robot='xarm6' requires clutter=True")
+
         self.clutter = clutter
-        scene = "pusht_clutter/scene.xml" if clutter else "pusht/scene.xml"
+        self.robot = robot
+        if not clutter:
+            scene = "pusht/scene.xml"
+        elif robot == "xarm6":
+            scene = "xarm6_pusht_clutter/scene.xml"
+        else:
+            scene = "pusht_clutter/scene.xml"
         mj_model = mujoco.MjModel.from_xml_path(ROOT + "/models/" + scene)
         if planning_dt is not None:
             mj_model.opt.timestep = planning_dt
-        super().__init__(mj_model, trace_sites=["pusher"], impl=impl)
 
-        # Sensor ids (defined identically in both scenes).
+        if robot == "xarm6":
+            # Ground-mounted base placement, not baked into xarm6.xml itself
+            # (that file is a reusable, placement-agnostic robot asset) --
+            # same pattern as overriding opt.timestep above: mutate the
+            # loaded mj_model before it's handed to mjx.
+            base_id = mj_model.body("xarm6_link_base").id
+            mj_model.body_pos[base_id] = [*XARM6_BASE_POS, 0.0]
+            yaw = jnp.deg2rad(XARM6_BASE_YAW_DEG)
+            mj_model.body_quat[base_id] = [
+                float(jnp.cos(yaw / 2)),
+                0.0,
+                0.0,
+                float(jnp.sin(yaw / 2)),
+            ]
+            trace_site = "xarm6_tip"
+        else:
+            trace_site = "pusher"
+        super().__init__(mj_model, trace_sites=[trace_site], impl=impl)
+
+        # Sensor ids (defined identically in all three scenes).
         self.block_position_sensor = mujoco.mj_name2id(
             mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "position"
         )
@@ -75,14 +132,31 @@ class PushT(Task, ConsensusTask):
         )
 
         if clutter:
-            pusher_x_dof = mj_model.joint("root_x").dofadr[0]
-            pusher_y_dof = mj_model.joint("root_y").dofadr[0]
-            self.pusher_dofs = jnp.array([pusher_x_dof, pusher_y_dof])
+            if robot == "xarm6":
+                # Block qpos addresses looked up explicitly, not assumed to
+                # be qpos[:3] -- unlike pusht_clutter.xml (block declared
+                # before the pusher), the composed xarm6 scene compiles the
+                # arm's 5 joints first, so the block's SE(2) pose actually
+                # lands at qpos[5:8].
+                self.block_qpos_adr = jnp.array(
+                    [
+                        mj_model.joint("T_x").qposadr[0],
+                        mj_model.joint("T_y").qposadr[0],
+                        mj_model.joint("T_z").qposadr[0],
+                    ]
+                )
+                self.tip_site_id = mj_model.site("xarm6_tip").id
+            else:
+                pusher_x_dof = mj_model.joint("root_x").dofadr[0]
+                pusher_y_dof = mj_model.joint("root_y").dofadr[0]
+                self.pusher_dofs = jnp.array([pusher_x_dof, pusher_y_dof])
 
             # Analytic object-level subproblem. mu/mass are chosen so that
             # the friction-cone limit mu*m*g equals the block joints'
             # `frictionloss` in the MJCF -- the analytic model and the
-            # simulated model then describe the same physics.
+            # simulated model then describe the same physics. Same for both
+            # embodiments: this is physics of the block/table, not the
+            # pusher.
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
                 goal=GOAL,
@@ -94,7 +168,9 @@ class PushT(Task, ConsensusTask):
             )
 
             # Robot-level cost weights (paper eq. 20), minus the tilt term:
-            # this is a planar pusher with no end-effector orientation DOF.
+            # neither embodiment currently has an end-effector orientation
+            # term wired into ell_r below (see `_ell_r`'s docstring for the
+            # xArm6 case).
             self.r_r = 0.05
             self.w_ee, self.r0 = 20.0, 0.05
             self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
@@ -119,9 +195,11 @@ class PushT(Task, ConsensusTask):
         return mjx._src.math.quat_sub(block_quat, goal_quat)
 
     def _close_to_block_err(self, state: mjx.Data) -> jax.Array:
-        """Position of the pusher block relative to the block."""
-        block_pos = state.qpos[:2]
-        pusher_pos = state.qpos[3:] + jnp.array([0.0, 0.1])  # y bias
+        """Position of the pusher relative to the block."""
+        block_pos = self._block_pose(state)[:2]
+        pusher_pos = self._pusher_pos(state)
+        if self.robot == "point":
+            pusher_pos = pusher_pos + jnp.array([0.0, 0.1])  # y bias
         return block_pos - pusher_pos
 
     def running_cost(self, state: mjx.Data, control: jax.Array) -> jax.Array:
@@ -146,6 +224,12 @@ class PushT(Task, ConsensusTask):
 
     def make_data(self) -> mjx.Data:
         """Create a new state object with extra constraints allocated."""
+        if self.clutter and self.robot == "xarm6":
+            # More headroom than the point-mass case: the arm has its own
+            # (mostly-excluded) self-contact pairs in addition to the
+            # stick/block/obstacle contacts, and a too-small allocation
+            # silently drops contacts rather than erroring.
+            return super().make_data(nconmax=256, naconmax=2048)
         if self.clutter:
             # Enough contact slots for the pusher, block, and 3 obstacles;
             # the default is too small and silently drops contacts.
@@ -157,9 +241,14 @@ class PushT(Task, ConsensusTask):
     # ------------------------------------------------------------------
 
     def _block_pose(self, state: mjx.Data) -> jax.Array:
+        if self.robot == "xarm6":
+            return state.qpos[self.block_qpos_adr]
         return state.qpos[:3]
 
     def _pusher_pos(self, state: mjx.Data) -> jax.Array:
+        """World-frame (x, y) position of the pusher's contact point."""
+        if self.robot == "xarm6":
+            return state.site_xpos[self.tip_site_id, :2]
         return state.qpos[3:5]
 
     @property
@@ -199,13 +288,27 @@ class PushT(Task, ConsensusTask):
     def realized_consensus(self, state: mjx.Data) -> jax.Array:
         """A^r: the wrench the pusher applies to the object (paper eq. 23).
 
-        `qfrc_constraint` at the pusher's DOFs is the constraint force acting
-        *on the pusher*; by Newton's third law its negation is the force the
-        pusher applies to the object. Expressed in the world frame about the
-        block's pose origin -- the same frame and reference point the object
-        model integrates, and the same units, so both ADMM blocks report the
-        identical physical quantity.
+        For `robot="point"`: `qfrc_constraint` at the pusher's DOFs is the
+        constraint force acting *on the pusher*; by Newton's third law its
+        negation is the force the pusher applies to the object. Expressed in
+        the world frame about the block's pose origin -- the same frame and
+        reference point the object model integrates, and the same units, so
+        both ADMM blocks report the identical physical quantity.
+
+        For `robot="xarm6"`: **not yet implemented** -- the point-mass trick
+        above only works because `root_x`/`root_y` are literal Cartesian
+        world-frame DOFs of a unit-mass body; the arm's `qfrc_constraint` is
+        5-DOF generalized joint torque with no such interpretation. Returns
+        zero, which only matters for `hydrax.algs.admm.ADMM` (not yet driven
+        with `robot="xarm6"` -- see `XARM6_ADMM_INTEGRATION_PLAN.md`'s
+        "technical crux" section for the intended fix,
+        `mjx._src.support.contact_force` masked by contact body id, verified
+        against `mj_contactForce` the same way this method's point-mass
+        version already was). Does not affect plain (non-ADMM) MPC, which
+        never calls this method.
         """
+        if self.robot == "xarm6":
+            return jnp.zeros(3)
         f = -state.qfrc_constraint[self.pusher_dofs]
         r = self._pusher_pos(state) - self._block_pose(state)[:2]
         tau = r[0] * f[1] - r[1] * f[0]
@@ -214,7 +317,16 @@ class PushT(Task, ConsensusTask):
     def _ell_r(
         self, pose: jax.Array, pusher_pos: jax.Array, obj_ref: jax.Array
     ) -> jax.Array:
-        """Robot stage cost ℓ_r: approach + push alignment (paper eq. 20-21)."""
+        """Robot stage cost ℓ_r: approach + push alignment (paper eq. 20-21).
+
+        Does not include the paper's `psi_tilt` (eq. 22) end-effector
+        orientation term for either embodiment yet -- correctly zero for
+        `robot="point"` (no end-effector orientation DOF at all), but per
+        `docs/admm_paper_mapping.md`'s deviation 4, this "should be restored
+        for the xArm6" (its wrist orientation is a real physical quantity).
+        Left out here since it's not needed for a basic working pipeline;
+        worth adding once this is being tuned for real pushing quality.
+        """
         d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
 

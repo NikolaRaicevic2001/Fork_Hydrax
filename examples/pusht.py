@@ -1,4 +1,5 @@
 import argparse
+import math
 from copy import deepcopy
 
 import mujoco
@@ -74,6 +75,14 @@ def build_sub_optimizer(
 
 SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
+# A starting joint configuration (degrees) that puts the xArm6's stick tip
+# near the block's initial position, found via
+# hydrax/models/xarm6_pusht_clutter/verify_reach.py's reach sweep -- not
+# the arm's own zero-config pose, which (after the base placement in
+# hydrax/tasks/pusht.py's XARM6_BASE_POS/XARM6_BASE_YAW_DEG) isn't
+# anywhere near the block.
+XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(
     description="Run an interactive simulation of the push-T task."
@@ -87,6 +96,17 @@ parser.add_argument(
     "--record",
     action="store_true",
     help="Record an mp4 of the run to hydrax/recordings/ (needs ffmpeg).",
+)
+parser.add_argument(
+    "--robot",
+    choices=["point", "xarm6"],
+    default="point",
+    help=(
+        "Which embodiment pushes the block: the original free 2-DOF point "
+        "mass (default), or a real 6-DoF xArm6 (PushT's robot='xarm6'). "
+        "xarm6 always implies the cluttered scene, even without the "
+        "'admm' subcommand -- there is no non-cluttered xarm6 scene."
+    ),
 )
 subparsers = parser.add_subparsers(
     dest="algorithm", help="Sampling algorithm (choose one)"
@@ -124,7 +144,7 @@ if args.algorithm == "admm":
         f"robot={args.robot_opt}, object={args.object_opt}"
     )
 
-    task = PushT(impl=impl, clutter=True, planning_dt=plan_dt)
+    task = PushT(impl=impl, clutter=True, planning_dt=plan_dt, robot=args.robot)
 
     # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
     # and comparable to the task costs, so rho is a meaningful knob.
@@ -169,7 +189,11 @@ if args.algorithm == "admm":
     mj_model.opt.iterations = 100
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
-    mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
+    if args.robot == "xarm6":
+        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
+        mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
+    else:
+        mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
 
     run_interactive(
         ctrl,
@@ -180,8 +204,13 @@ if args.algorithm == "admm":
         record_video=args.record,
     )
 else:
-    # Define the task (cost and dynamics)
-    task = PushT(impl=impl)
+    # Define the task (cost and dynamics). Plain (non-ADMM) MPC against the
+    # basic reach-and-touch running_cost -- for robot="xarm6" this is the
+    # first validation step before any ADMM-specific wiring is trusted (see
+    # XARM6_ADMM_INTEGRATION_PLAN.md's "Validation staging" section):
+    # xarm6 still needs clutter=True (there's no non-cluttered xarm6 scene),
+    # but nothing ADMM-related is constructed here.
+    task = PushT(impl=impl, clutter=(args.robot == "xarm6"), robot=args.robot)
 
     # Set the controller based on command-line arguments
     if args.algorithm == "ps" or args.algorithm is None:
@@ -216,7 +245,11 @@ else:
     mj_model.opt.iterations = 100
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
-    mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
+    if args.robot == "xarm6":
+        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
+        mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
+    else:
+        mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
 
     # Run the interactive simulation
     run_interactive(
