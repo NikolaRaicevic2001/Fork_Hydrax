@@ -1,4 +1,5 @@
 import copy
+import inspect
 from typing import Optional, Type
 
 import jax
@@ -112,6 +113,51 @@ def test_wrench_consensus_math() -> None:
     p2 = consensus.penalty_cost(diff, zero, zero, rho=2.0)
     assert jnp.allclose(p2, 2.0 * p1)
     assert jnp.allclose(p1, 0.5 * jnp.sum(diff**2))
+
+
+def test_consensus_scale_normalizes_penalty_and_residual() -> None:
+    """`scale` must normalize both the penalty and the residual norm.
+
+    Without it the penalty (contact forces ~10 N, squared) dwarfs the task
+    costs (~1) and the robot optimizes wrench matching to the exclusion of
+    reaching the object.
+    """
+    scale = jnp.array([8.0, 8.0, 0.5])
+    raw = WrenchConsensus(max_dual=10.0)
+    scaled = WrenchConsensus(max_dual=10.0, scale=scale)
+
+    v = jnp.array([8.0, 0.0, 0.0])
+    zero = jnp.zeros(3)
+
+    # A residual of exactly one "scale" is 1.0 in normalized units.
+    assert jnp.allclose(scaled.normalize(scale), jnp.ones(3))
+    assert jnp.allclose(scaled.residual_norm(v), 1.0)
+    assert jnp.allclose(raw.residual_norm(v), 8.0)
+
+    # The penalty shrinks by scale^2, bringing it onto the task cost's scale.
+    assert jnp.allclose(
+        scaled.penalty_cost(v, zero, zero, rho=1.0),
+        raw.penalty_cost(v, zero, zero, rho=1.0) / 64.0,
+    )
+
+
+def test_both_blocks_use_identical_consensus_penalty() -> None:
+    """Object and robot blocks must score the consensus variable identically.
+
+    Both must route through `ConsensusSpace.penalty_cost` rather than each
+    hand-rolling a copy, otherwise the two blocks can silently drift into
+    optimizing different things.
+    """
+    task = _build_task()
+    ctrl = _build_admm(task)
+
+    assert ctrl.object_subproblem.consensus is ctrl.consensus
+    assert ctrl.robot_subproblem.consensus is ctrl.consensus
+
+    # The task must NOT add a penalty of its own: robot_running_cost takes
+    # only (state, control, obj_ref_t) -- no z / dual / rho.
+    sig = inspect.signature(task.robot_running_cost)
+    assert list(sig.parameters) == ["state", "control", "obj_ref_t"]
 
 
 def test_admm_init_params_shapes() -> None:

@@ -214,31 +214,35 @@ class ConsensusTask(ABC):
         """
         return jnp.ones(self.consensus_dim)
 
+    def consensus_scale(self) -> jax.Array:
+        """Characteristic per-dimension magnitude of the consensus variable.
+
+        Used to normalize the ADMM penalty and residuals so that `rho` and
+        the residual tolerances are scale-free and the penalty is comparable
+        in magnitude to the task costs. Defaults to ones (no normalization);
+        override with e.g. the largest physically transmissible wrench.
+        """
+        return jnp.ones(self.consensus_dim)
+
     @abstractmethod
     def robot_running_cost(
-        self,
-        state: mjx.Data,
-        control: jax.Array,
-        z_t: jax.Array,
-        dual_t: jax.Array,
-        rho: jax.Array,
-        obj_ref_t: jax.Array,
+        self, state: mjx.Data, control: jax.Array, obj_ref_t: jax.Array
     ) -> jax.Array:
-        """The ADMM-penalized robot-level running cost.
+        """The robot-level running cost J_r (paper eq. 17).
 
-        Should combine the robot's own regularization/tracking terms with the
-        ADMM consensus penalty (ρ/2)||A^r(state) - z_t + dual_t||².
+        This is the task's own cost only — ℓ_o + ℓ_r + ℓ_c plus any control
+        effort term. Do **not** add the ADMM consensus penalty here: the
+        ADMM layer adds it via `ConsensusSpace.penalty_cost`, the same
+        function the object block uses, so both blocks are guaranteed to
+        score the consensus variable identically.
 
         Args:
             state: The robot's current MJX state x^r_t.
             control: The control action u^r_t.
-            z_t: The current consensus variable value.
-            dual_t: The current (scaled) dual variable for the robot block.
-            rho: The current ADMM penalty weight (may be adapted online).
             obj_ref_t: The object planner's current reference x^{o*}_t.
 
         Returns:
-            The scalar ADMM-penalized running cost.
+            The scalar robot-level running cost.
         """
 
     @abstractmethod

@@ -1,5 +1,10 @@
 <mujoco model="pusht_clutter">
-  <option timestep="0.01" gravity="0 0 -9.81" iterations="20" ls_iterations="20" integrator="Euler"/>
+  <!-- integrator="implicitfast" treats the velocity actuators' velocity
+       feedback implicitly. With explicit Euler the pusher actuator is only
+       stable for dt < 2*m/kv = 0.02 s, so a planning timestep of 0.05 s
+       makes the planner's rollouts diverge (the pusher "flies away"), even
+       though the fine-timestep execution model looks fine. -->
+  <option timestep="0.01" gravity="0 0 -9.81" iterations="20" ls_iterations="20" integrator="implicitfast"/>
 
   <default>
     <velocity ctrllimited="true" ctrlrange="-0.6 0.6" kv="100" forcerange="-200 200"/>

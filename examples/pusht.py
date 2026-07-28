@@ -5,6 +5,8 @@ import mujoco
 
 from hydrax.algs import (
     ADMM,
+    CBO,
+    CEM,
     MPPI,
     PredictiveSampling,
     WrenchConsensus,
@@ -17,6 +19,61 @@ from hydrax.tasks.pusht import PushT
 Run an interactive simulation of the push-T task.
 """
 
+
+def build_sub_optimizer(
+    name: str,
+    task: object,
+    *,
+    plan_horizon: float,
+    num_knots: int,
+    spline: str,
+    seed: int,
+) -> object:
+    """Build one ADMM sub-optimizer by name.
+
+    Any `SamplingBasedController` works for either ADMM block -- the ADMM
+    layer only ever calls `sample_knots`/`update_params` -- so the object-
+    and robot-level optimizers are chosen independently here.
+    """
+    common = dict(
+        plan_horizon=plan_horizon,
+        spline_type=spline,
+        num_knots=num_knots,
+        seed=seed,
+    )
+    if name == "mppi":
+        return MPPI(
+            task, num_samples=64, noise_level=0.5, temperature=0.5, **common
+        )
+    if name == "cem":
+        return CEM(
+            task,
+            num_samples=64,
+            num_elites=8,
+            sigma_start=0.5,
+            sigma_min=0.1,
+            **common,
+        )
+    if name == "ps":
+        return PredictiveSampling(
+            task, num_samples=64, noise_level=0.5, **common
+        )
+    if name == "cbo":
+        return CBO(
+            task,
+            num_samples=64,
+            initial_noise_level=0.5,
+            temperature=0.5,
+            consensus_weight=1.0,
+            noise_weight=1.0,
+            step_size=0.1,
+            **common,
+        )
+    raise ValueError(f"unknown sub-optimizer '{name}'")
+
+
+SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(
     description="Run an interactive simulation of the push-T task."
@@ -26,59 +83,85 @@ parser.add_argument(
     action="store_true",
     help="Whether to use the (experimental) MjWarp backend. (default: False)",
 )
+parser.add_argument(
+    "--record",
+    action="store_true",
+    help="Record an mp4 of the run to hydrax/recordings/ (needs ffmpeg).",
+)
 subparsers = parser.add_subparsers(
     dest="algorithm", help="Sampling algorithm (choose one)"
 )
 subparsers.add_parser("ps", help="Predictive Sampling")
 subparsers.add_parser("mppi", help="Model Predictive Path Integral Control")
-subparsers.add_parser(
+admm_parser = subparsers.add_parser(
     "admm", help="ADMM-coordinated object-informed MPPI on a cluttered scene"
 )
+admm_parser.add_argument(
+    "--robot-opt",
+    choices=SUB_OPTIMIZERS,
+    default="mppi",
+    help="Sampling optimizer for the robot-level ADMM block.",
+)
+admm_parser.add_argument(
+    "--object-opt",
+    choices=SUB_OPTIMIZERS,
+    default="mppi",
+    help="Sampling optimizer for the object-level ADMM block.",
+)
+admm_parser.add_argument("--n-admm", type=int, default=8)
+admm_parser.add_argument("--rho", type=float, default=10.0)
+admm_parser.add_argument("--gamma", type=float, default=0.1)
+admm_parser.add_argument("--seed", type=int, default=5)
 args = parser.parse_args()
 
 impl = "warp" if args.warp else "jax"
 
 if args.algorithm == "admm":
-    print("Running ADMM object-informed MPPI (cluttered scene)")
     plan_dt = 0.05
     horizon = 15  # consensus horizon H (steps of plan_dt)
+    print(
+        f"Running ADMM object-informed MPPI (cluttered scene): "
+        f"robot={args.robot_opt}, object={args.object_opt}"
+    )
 
     task = PushT(impl=impl, clutter=True, planning_dt=plan_dt)
-    consensus = WrenchConsensus(max_dual=15.0)
 
-    robot_optimizer = MPPI(
-        task,
-        num_samples=64,
-        noise_level=0.4,
-        temperature=1.0,
-        plan_horizon=horizon * plan_dt,
-        spline_type="linear",
-        num_knots=4,
-        seed=5,
+    # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
+    # and comparable to the task costs, so rho is a meaningful knob.
+    consensus = WrenchConsensus(
+        max_dual=2.0 * float(task.consensus_scale()[0]),
+        scale=task.consensus_scale(),
     )
-    object_optimizer = MPPI(
-        make_object_shim(task, dt=plan_dt),
-        num_samples=64,
-        noise_level=1.0,
-        temperature=1.0,
+
+    robot_optimizer = build_sub_optimizer(
+        args.robot_opt,
+        task,
         plan_horizon=horizon * plan_dt,
-        spline_type="zero",
+        num_knots=4,
+        spline="linear",
+        seed=args.seed,
+    )
+    object_optimizer = build_sub_optimizer(
+        args.object_opt,
+        make_object_shim(task, dt=plan_dt),
+        plan_horizon=horizon * plan_dt,
         num_knots=horizon,
-        seed=5,
+        spline="zero",
+        seed=args.seed,
     )
     ctrl = ADMM(
         task,
         robot_optimizer,
         object_optimizer,
         consensus,
-        n_admm=12,
-        eps_r=1.0,
-        eps_s=1.0,
-        proximal_weight=0.05,
-        rho_init=1.0,
+        n_admm=args.n_admm,
+        eps_r=0.05,
+        eps_s=0.05,
+        proximal_weight=args.gamma,
+        rho_init=args.rho,
         noise_min=0.05,
-        noise_kappa=0.05,
-        noise_max=1.0,
+        noise_kappa=0.1,
+        noise_max=0.5,
     )
 
     mj_model = deepcopy(task.mj_model)
@@ -94,6 +177,7 @@ if args.algorithm == "admm":
         mj_data,
         frequency=1.0 / plan_dt,
         show_traces=False,
+        record_video=args.record,
     )
 else:
     # Define the task (cost and dynamics)
@@ -141,4 +225,5 @@ else:
         mj_data,
         frequency=50,
         show_traces=False,
+        record_video=args.record,
     )

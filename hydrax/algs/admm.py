@@ -28,17 +28,41 @@ from hydrax.task_base import ConsensusTask
 
 
 class ConsensusSpace(ABC):
-    """A consensus variable space for ADMM, shared between two subproblems."""
+    """A consensus variable space for ADMM, shared between two subproblems.
+
+    The consensus variable z_t must be *the same physical quantity, in the
+    same units and frame*, on both blocks -- the object block's proposed
+    value A^o and the robot block's realized value A^r. This class owns all
+    the math that touches z, so both blocks provably use identical
+    definitions rather than each hand-rolling their own copy.
+    """
 
     dim: int
 
     @abstractmethod
+    def normalize(self, v: jax.Array) -> jax.Array:
+        """Map a consensus-space value to dimensionless, O(1) units.
+
+        Used for both the penalty and the residual norms, so that `rho`,
+        `eps_r` and `eps_s` are scale-free and comparable against the task
+        costs regardless of the physical units z happens to carry.
+        """
+
     def penalty_cost(
         self, actual: jax.Array, z: jax.Array, dual: jax.Array, rho: jax.Array
     ) -> jax.Array:
-        """(rho/2) * ||actual - z + dual||^2, batched over a leading dim."""
+        """(rho/2) * ||actual - z + dual||^2, in normalized units.
 
-    @abstractmethod
+        Collapses only the consensus dimension; the caller sums over the
+        horizon and samples. Shared by both blocks (paper eq. 24-25).
+        """
+        diff = self.normalize(actual - z + dual)
+        return 0.5 * rho * jnp.sum(diff**2, axis=-1)
+
+    def residual_norm(self, v: jax.Array) -> jax.Array:
+        """Norm of a residual, in the same normalized units as the penalty."""
+        return jnp.linalg.norm(self.normalize(v))
+
     def z_update(
         self,
         a_o: jax.Array,
@@ -46,44 +70,60 @@ class ConsensusSpace(ABC):
         dual_o: jax.Array,
         dual_r: jax.Array,
     ) -> jax.Array:
-        """Consensus update z_t = 0.5*(a_o + dual_o + a_r + dual_r)."""
+        """z_t = 0.5*(a_o + dual_o + a_r + dual_r), paper eq. 26.
+
+        This is eq. 14 with N = 2 and the projection Pi_Z equal to the
+        identity (the consensus space is unconstrained).
+        """
+        return 0.5 * (a_o + dual_o + a_r + dual_r)
 
     @abstractmethod
     def dual_update(
         self, actual: jax.Array, z: jax.Array, dual: jax.Array
     ) -> jax.Array:
-        """Dual step, with anti-windup clamping."""
+        """Dual step y <- y + (A x - z), paper eq. 27."""
 
 
 class WrenchConsensus(ConsensusSpace):
-    """World-frame CoM wrench consensus z_t = [f_x, f_y, tau]; arrays (H, 3)."""
+    """Planar contact wrench consensus z_t = [f_x, f_y, tau]; arrays (H, 3).
+
+    z is the wrench the robot applies *to the object*, expressed in the world
+    frame about the object's pose origin, in Newtons and Newton-metres. Both
+    blocks must report it that way:
+
+    * A^o: the object planner's proposed wrench, read directly off its own
+      decision variable (paper eq. 23).
+    * A^r: the wrench the robot's rolled-out motion actually imparts on the
+      object, read from the simulator's contact forces (paper eq. 23).
+
+    `scale` sets the characteristic magnitude used to normalize the penalty
+    and residuals. The natural choice is the friction-cone limit
+    (mu*m*g for forces, r*mu*m*g for the torque), which is exactly the
+    inverse of the limit-surface compliance D -- i.e. the normalized residual
+    measures disagreement as a *fraction of the maximum transmissible
+    wrench*. Without this the penalty (forces ~10 N, squared -> ~10^2)
+    dwarfs the task costs (~1) and the robot ends up optimizing wrench
+    matching to the exclusion of actually reaching the object.
+    """
 
     dim = 3
 
-    def __init__(self, max_dual: float) -> None:
-        """Set the dual anti-windup clip.
+    def __init__(self, max_dual: float, scale: jax.Array = None) -> None:
+        """Set the dual anti-windup clip and the normalization scale.
 
         Args:
-            max_dual: The maximum magnitude of the (scaled) dual variables.
+            max_dual: Maximum magnitude of the scaled dual variables, in the
+                same physical units as z (anti-windup; an extension beyond
+                the paper, which leaves the duals unbounded).
+            scale: Per-dimension characteristic magnitude of z. Defaults to
+                ones (no normalization).
         """
         self.max_dual = max_dual
+        self.scale = jnp.ones(self.dim) if scale is None else jnp.asarray(scale)
 
-    def penalty_cost(
-        self, actual: jax.Array, z: jax.Array, dual: jax.Array, rho: jax.Array
-    ) -> jax.Array:
-        """Collapses only the wrench dim; caller sums over horizon/samples."""
-        diff = actual - z + dual
-        return 0.5 * rho * jnp.sum(diff**2, axis=-1)
-
-    def z_update(
-        self,
-        a_o: jax.Array,
-        a_r: jax.Array,
-        dual_o: jax.Array,
-        dual_r: jax.Array,
-    ) -> jax.Array:
-        """z_t = 0.5*(a_o+dual_o+a_r+dual_r), eq. 26."""
-        return 0.5 * (a_o + dual_o + a_r + dual_r)
+    def normalize(self, v: jax.Array) -> jax.Array:
+        """Divide through by the per-dimension characteristic magnitude."""
+        return v / self.scale
 
     def dual_update(
         self, actual: jax.Array, z: jax.Array, dual: jax.Array
@@ -210,16 +250,24 @@ class ObjectSubproblem:
             ws = knots * scale  # (K, H, dim), physical units
 
             states = jax.vmap(self._rollout, in_axes=(None, 0))(obj_state0, ws)
-            running = jax.vmap(jax.vmap(self.task.object_running_cost))(
-                states[:, :-1], ws[:, :-1]
-            )
+            # J_o: dt-weighted running cost + terminal cost, matching the
+            # robot block's convention so the two blocks stay balanced.
+            running = self.task.dt * jax.vmap(
+                jax.vmap(self.task.object_running_cost)
+            )(states[:, :-1], ws[:, :-1])
             terminal = jax.vmap(self.task.object_terminal_cost)(states[:, -1])
 
-            proximal = self.proximal_weight * jnp.sum(
-                (knots - prev_knots) ** 2, axis=(-2, -1)
+            # Proximal term (gamma/2)||U^o - U^{o,(l)}||^2, paper eq. 24.
+            proximal = (
+                0.5
+                * self.proximal_weight
+                * jnp.sum((knots - prev_knots) ** 2, axis=(-2, -1))
             )
             terminal = terminal + proximal
 
+            # ADMM penalty (rho/2)||A^o(U^o)_t - z_t + y^o_t||^2, eq. 24.
+            # A^o reads the proposed wrench straight off the decision
+            # variable, so it is exactly `ws`.
             penalty = self.consensus.penalty_cost(ws, z, dual_o, rho)
             costs = jnp.concatenate([running, terminal[:, None]], axis=1)
             costs = costs + penalty
@@ -255,21 +303,24 @@ class RobotSubproblem:
         self,
         task: ConsensusTask,
         optimizer: SamplingBasedController,
+        consensus: ConsensusSpace,
         proximal_weight: float,
     ) -> None:
         """Pair the task with its injected sampling optimizer.
 
         Args:
-            task: The real task (also a `Task`), providing the MJX model and
-                the ADMM-penalized robot-level cost. Unlike the object side,
-                the ADMM penalty is computed inside `task.robot_running_cost`
-                itself (it needs `rho`/`z_t`/`dual_t` at every timestep
-                anyway), so no `ConsensusSpace` is needed here.
+            task: The real task (also a `Task`), providing the MJX model,
+                the robot-level task cost, and the A^r extraction map.
             optimizer: Any `SamplingBasedController` built against `task`.
+            consensus: The consensus space. The ADMM penalty is added here,
+                by the same `consensus.penalty_cost` the object block uses,
+                so both blocks are guaranteed to score the consensus
+                variable identically.
             proximal_weight: Weight (gamma) on the proximal term (eq. 25).
         """
         self.task = task
         self.optimizer = optimizer
+        self.consensus = consensus
         self.proximal_weight = proximal_weight
 
     @partial(
@@ -300,10 +351,17 @@ class RobotSubproblem:
             u, z_t, dual_t, ref_t = inputs
             x = x.replace(ctrl=u)
             x = mjx.step(model, x)
-            cost = self.optimizer.dt * self.task.robot_running_cost(
-                x, u, z_t, dual_t, rho, ref_t
-            )
+            # J_r: the task's own cost, dt-weighted per hydrax convention.
+            cost = self.optimizer.dt * self.task.robot_running_cost(x, u, ref_t)
+            # A^r: the wrench the robot's motion actually imparts on the
+            # object, read from the simulator (paper eq. 23).
             consensus_val = self.task.realized_consensus(x)
+            # ADMM penalty (rho/2)||A^r(U^r)_t - z_t + y^r_t||^2 (eq. 25).
+            # Added here, not inside the task, so it is literally the same
+            # function the object block uses.
+            cost = cost + self.consensus.penalty_cost(
+                consensus_val, z_t, dual_t, rho
+            )
             sites = self.task.get_trace_sites(x)
             return x, (x, cost, consensus_val, sites)
 
@@ -311,7 +369,10 @@ class RobotSubproblem:
             jax.lax.scan(_scan_fn, state, (controls, z, dual_r, obj_ref))
         )
 
-        proximal = self.proximal_weight * jnp.sum((knots - prev_knots) ** 2)
+        # Proximal term (gamma/2)||U^r - U^{r,(l)}||^2, paper eq. 25.
+        proximal = (
+            0.5 * self.proximal_weight * jnp.sum((knots - prev_knots) ** 2)
+        )
         final_cost = self.task.robot_terminal_cost(final_state) + proximal
         final_trace_sites = self.task.get_trace_sites(final_state)
 
@@ -588,7 +649,7 @@ class ADMM(SamplingBasedController):
             task, object_optimizer, consensus, proximal_weight
         )
         self.robot_subproblem = RobotSubproblem(
-            task, robot_optimizer, proximal_weight
+            task, robot_optimizer, consensus, proximal_weight
         )
 
         # Alias bookkeeping attributes off robot_optimizer, rather than
@@ -677,10 +738,14 @@ class ADMM(SamplingBasedController):
         gamma_o = self.consensus.dual_update(w_obj, z_new, carry.gamma_o)
         gamma_r = self.consensus.dual_update(w_rob, z_new, carry.gamma_r)
 
-        primal_res = jnp.linalg.norm(
+        # Residuals, in the same normalized units as the penalty so that
+        # eps_r/eps_s are scale-free.
+        #   primal r = [A^o - z ; A^r - z]   (both blocks stacked)
+        #   dual   d = rho * (z^{l+1} - z^{l})
+        primal_res = self.consensus.residual_norm(
             jnp.concatenate([w_obj - z_new, w_rob - z_new])
         )
-        dual_res = jnp.linalg.norm(carry.rho * (z_new - carry.z))
+        dual_res = carry.rho * self.consensus.residual_norm(z_new - carry.z)
 
         # Algorithm 4 step 7: adaptive penalty.
         rho = jnp.where(

@@ -56,16 +56,10 @@ def test_clutter_consensus_task_methods() -> None:
     terminal = task.object_terminal_cost(obj_state)
     assert terminal.shape == ()
 
-    scale = task.object_action_scale()
-    assert scale.shape == (3,)
+    assert task.object_action_scale().shape == (3,)
+    assert task.consensus_scale().shape == (3,)
 
-    z_t = jnp.zeros(3)
-    dual_t = jnp.zeros(3)
-    rho = jnp.asarray(1.0)
-    obj_ref_t = jnp.zeros(3)
-    ell = task.robot_running_cost(
-        state, jnp.zeros(2), z_t, dual_t, rho, obj_ref_t
-    )
+    ell = task.robot_running_cost(state, jnp.zeros(2), jnp.zeros(3))
     assert ell.shape == ()
 
     phi = task.robot_terminal_cost(state)
@@ -73,6 +67,53 @@ def test_clutter_consensus_task_methods() -> None:
 
     consensus_val = task.realized_consensus(state)
     assert consensus_val.shape == (3,)
+
+
+def test_clutter_analytic_model_matches_mjcf() -> None:
+    """The analytic object model must describe the same physics as the MJCF.
+
+    The block joints' `frictionloss` in the MJCF is what makes the simulated
+    block resist motion; the analytic limit-surface model's friction-cone
+    limit `mu*m*g` plays the same role. If they drift apart, the two ADMM
+    blocks are silently modelling different objects.
+    """
+    task = PushT(clutter=True, planning_dt=0.05)
+    mj = task.mj_model
+    limit = task.object_model.wrench_limit
+
+    fx = mj.dof_frictionloss[mj.joint("T_x").dofadr[0]]
+    fy = mj.dof_frictionloss[mj.joint("T_y").dofadr[0]]
+    ftheta = mj.dof_frictionloss[mj.joint("T_z").dofadr[0]]
+
+    assert jnp.allclose(limit[0], fx, rtol=1e-3)
+    assert jnp.allclose(limit[1], fy, rtol=1e-3)
+    assert jnp.allclose(limit[2], ftheta, rtol=1e-3)
+
+
+def test_clutter_planning_model_is_stable() -> None:
+    """The planning model must not diverge at the planning timestep.
+
+    The pusher's velocity actuator is only stable under explicit Euler for
+    dt < 2*m/kv; at the 0.05 s planning timestep that bound is violated, so
+    the model needs an implicit integrator. Without this the planner's
+    rollouts blow up and the robot appears to "drift away" from the object
+    even though the fine-timestep execution model looks fine.
+    """
+    task = PushT(clutter=True, planning_dt=0.05)
+    state = task.make_data().replace(
+        qpos=jnp.array([0.0, 0.0, 0.0, -0.4, -0.4]), qvel=jnp.zeros(5)
+    )
+    step = jax.jit(mjx.step)
+    for _ in range(20):  # 1 second of constant commanded velocity
+        state = step(task.model, state.replace(ctrl=jnp.array([0.0, 0.6])))
+
+    # Commanded 0.6 m/s for 1 s: the pusher should travel ~0.6 m, not diverge.
+    assert jnp.all(jnp.isfinite(state.qpos))
+    assert abs(float(state.qvel[4])) < 2.0, (
+        f"pusher velocity {float(state.qvel[4])} diverged from the "
+        "commanded 0.6 m/s -- planning model is numerically unstable"
+    )
+    assert abs(float(state.qpos[4]) - (-0.4)) < 1.5
 
 
 if __name__ == "__main__":
