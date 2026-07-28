@@ -2,9 +2,9 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import PredictiveSampling
-from hydrax.simulation.asynchronous import run_interactive
-from hydrax.tasks.cube import CubeRotation
+from oim.algs import PredictiveSampling
+from oim.simulation.asynchronous import run_interactive
+from oim.tasks.cube import CubeRotation
 
 """
 Run an asynchronous interactive simulation of the cube rotation task.

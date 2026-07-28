@@ -3,9 +3,9 @@ import argparse
 import mujoco
 from evosax.algorithms.distribution_based.cma_es import CMA_ES
 
-from hydrax.algs import CEM, MPPI, Evosax, PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.cube import CubeRotation
+from oim.algs import CEM, MPPI, Evosax, PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.cube import CubeRotation
 
 """
 Run an interactive simulation of the cube rotation task.

@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.tasks.pendulum import Pendulum
+from oim.tasks.pendulum import Pendulum
 
 
 @pytest.mark.parametrize("impl", ["jax", "warp"])

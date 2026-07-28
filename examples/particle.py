@@ -11,10 +11,10 @@ from evosax.algorithms.distribution_based import (
     xNES,
 )
 
-from hydrax.algs import CEM, DIAL, MPPI, Evosax, PredictiveSampling
-from hydrax.risk import WorstCase
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.particle import Particle
+from oim.algs import CEM, DIAL, MPPI, Evosax, PredictiveSampling
+from oim.risk import WorstCase
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.particle import Particle
 
 """
 Run an interactive simulation of the particle tracking task.

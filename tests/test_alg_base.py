@@ -1,9 +1,9 @@
 import jax
 import jax.numpy as jnp
 
-from hydrax.alg_base import Trajectory
-from hydrax.algs.cem import CEM
-from hydrax.tasks.particle import Particle
+from oim.alg_base import Trajectory
+from oim.algs.cem import CEM
+from oim.tasks.particle import Particle
 
 
 def test_traj() -> None:

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from hydrax.risk import (
+from oim.risk import (
     AverageCost,
     BestCase,
     ConditionalValueAtRisk,

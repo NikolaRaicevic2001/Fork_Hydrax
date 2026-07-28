@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import MppiCma
-from hydrax.simulation.asynchronous import run_interactive as run_async
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.humanoid_standup import HumanoidStandup
+from oim.algs import MppiCma
+from oim.simulation.asynchronous import run_interactive as run_async
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.humanoid_standup import HumanoidStandup
 
 """
 Run an interactive simulation of the humanoid standup task.

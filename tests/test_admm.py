@@ -6,10 +6,10 @@ import jax
 import jax.numpy as jnp
 import mujoco
 
-from hydrax.alg_base import SamplingBasedController
-from hydrax.algs import ADMM, CBO, MPPI, WrenchConsensus, make_object_shim
-from hydrax.algs.admm import ObjectSubproblem
-from hydrax.tasks.pusht import PushT
+from oim.alg_base import SamplingBasedController
+from oim.algs import ADMM, CBO, MPPI, WrenchConsensus, make_object_shim
+from oim.algs.admm import ObjectSubproblem
+from oim.tasks.pusht import PushT
 
 PLAN_DT = 0.05
 HORIZON = 15
@@ -199,7 +199,7 @@ def test_admm_jit_xarm6() -> None:
 
     The one thing that changes for this embodiment is a real
     `realized_consensus` (contact-force extraction, see its docstring in
-    `hydrax/tasks/pusht.py` for the verification done and its caveats) in
+    `oim/tasks/pusht.py` for the verification done and its caveats) in
     place of the `qfrc_constraint` trick -- this is the first test that
     exercises that path end-to-end under `jax.jit`, inside the full ADMM
     loop rather than in isolation.

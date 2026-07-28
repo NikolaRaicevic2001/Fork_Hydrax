@@ -5,8 +5,8 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 
-from hydrax.algs import MPPI
-from hydrax.tasks.double_cart_pole import DoubleCartPole
+from oim.algs import MPPI
+from oim.tasks.double_cart_pole import DoubleCartPole
 
 
 def test_opt_iterations() -> None:

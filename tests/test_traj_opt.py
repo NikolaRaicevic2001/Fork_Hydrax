@@ -1,6 +1,6 @@
-from hydrax.algs import PredictiveSampling
-from hydrax.open_loop import trajectory_optimization
-from hydrax.tasks.cart_pole import CartPole
+from oim.algs import PredictiveSampling
+from oim.open_loop import trajectory_optimization
+from oim.tasks.cart_pole import CartPole
 
 
 def test_traj_opt() -> None:

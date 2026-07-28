@@ -3,9 +3,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from mujoco import mjx
 
-from hydrax.algs.mppi_cma import MppiCma
-from hydrax.tasks.particle import Particle
-from hydrax.tasks.pendulum import Pendulum
+from oim.algs.mppi_cma import MppiCma
+from oim.tasks.particle import Particle
+from oim.tasks.pendulum import Pendulum
 
 
 def test_params_update() -> None:

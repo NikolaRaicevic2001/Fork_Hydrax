@@ -3,9 +3,9 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import MPPI, PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.walker import Walker
+from oim.algs import MPPI, PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.walker import Walker
 
 """
 Run an interactive simulation of the walker task.

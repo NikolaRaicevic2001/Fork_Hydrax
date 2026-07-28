@@ -2,9 +2,9 @@ import argparse
 
 import mujoco
 
-from hydrax.algs import CBO, CEM, MPPI, MTP, PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.bugtrap import BugTrap
+from oim.algs import CBO, CEM, MPPI, MTP, PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.bugtrap import BugTrap
 
 """
 Run an interactive simulation of the bug-trap navigation task.

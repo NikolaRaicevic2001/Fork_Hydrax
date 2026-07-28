@@ -1,371 +1,452 @@
-# Hydrax
+# Object-Informed Manipulation MJX
 
-Sampling-based model predictive control on GPU with
+GPU-accelerated planning for **non-prehensile manipulation**, built on
 [JAX](https://jax.readthedocs.io/) and
 [MuJoCo MJX](https://mujoco.readthedocs.io/en/stable/mjx.html).
 
-![A humanoid running MPPI](img/humanoid.gif)
-&nbsp;&nbsp;&nbsp;
-![A robot hand rotating a cube](img/cube.gif)
+This repository implements **object-informed MPPI**: a hierarchical
+formulation that splits long-horizon pushing into an *object-level* planner
+(which decides what contact wrench the object needs) and a *robot-level*
+planner (which decides how to realize it), coordinated by ADMM until the two
+agree. It is built on top of a general library of sampling-based MPC
+algorithms — MPPI, CEM, predictive sampling and others — which remain fully
+available and serve as the interchangeable inner solvers of the ADMM
+subproblems.
 
-## About
+<p align="center">
+  <img src="img/humanoid.gif" width="30%" />
+  &nbsp;&nbsp;
+  <img src="img/cube.gif" width="30%" />
+</p>
 
-Hydrax implements various sampling-based MPC algorithms on GPU. It is heavily
-inspired by [MJPC](https://github.com/google-deepmind/mujoco_mpc), but focuses
-exclusively on sampling-based algorithms, runs on hardware accelerators via JAX
-and MJX, and includes support for [online domain
-randomization](#domain-randomization).
+## Contents
 
-Available methods:
+- [Algorithms](#algorithms)
+- [Setup](#setup)
+- [Quick start](#quick-start)
+- [Mathematical formulation](#mathematical-formulation)
+- [Code map](#code-map)
+- [Designing a task](#designing-a-task)
+- [Domain randomization and risk](#domain-randomization-and-risk)
+- [Other utilities](#other-utilities)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
+
+## Algorithms
 
 | Algorithm | Description | Import |
-| --- | ---  | --- |
-| [Predictive sampling](https://arxiv.org/abs/2212.00541) | Take the lowest-cost rollout at each iteration. | [`hydrax.algs.PredictiveSampling`](hydrax/algs/predictive_sampling.py) |
-| [MPPI](https://arxiv.org/abs/1707.02342) | Take an exponentially weighted average of the rollouts. | [`hydrax.algs.MPPI`](hydrax/algs/mppi.py) |
-| [Cross Entropy Method](https://en.wikipedia.org/wiki/Cross-entropy_method) | Fit a Gaussian distribution to the `n` best "elite" rollouts. | [`hydrax.algs.CEM`](hydrax/algs/cem.py) |
-| [DIAL-MPC](https://arxiv.org/abs/2409.15610) | MPPI with dual-loop, annealed sampling covariance. | [`hydrax.algs.DIAL`](hydrax/algs/dial.py) |
-| [Evosax](https://github.com/RobertTLange/evosax/) | Any of the 30+ evolution strategies implemented in `evosax`. Includes CMA-ES, differential evolution, and many more. | [`hydrax.algs.Evosax`](hydrax/algs.evosax.py) |
-| [MPPI-CMA](https://arxiv.org/pdf/2506.22087) | MPPI with an adaptive sampling distribution. | [`hydrax.algs.MppiCma`](hydrax/algs/mppi_cma.py) |
-| [MTP](https://arxiv.org/abs/2505.01059) | Mix structured tensor-sampled trajectories with a local CEM update for global exploration. | [`hydrax.algs.MTP`](hydrax/algs/mtp.py) |
-| [CBO](https://arxiv.org/abs/2602.06868) | Simulate an SDE that pulls samples toward a consensus point. | [`hydrax.algs.MTP`](hydrax/algs/cbo.py)
+| --- | --- | --- |
+| **[ADMM object-informed MPPI](#mathematical-formulation)** | **Hierarchical object/robot decomposition, coordinated to consensus on the contact wrench. Either subproblem accepts any sampler below.** | [`oim.algs.ADMM`](oim/algs/admm.py) |
+| [Predictive sampling](https://arxiv.org/abs/2212.00541) | Take the lowest-cost rollout at each iteration. | [`oim.algs.PredictiveSampling`](oim/algs/predictive_sampling.py) |
+| [MPPI](https://arxiv.org/abs/1707.02342) | Exponentially weighted average of the rollouts. | [`oim.algs.MPPI`](oim/algs/mppi.py) |
+| [Cross Entropy Method](https://en.wikipedia.org/wiki/Cross-entropy_method) | Fit a Gaussian to the `n` best "elite" rollouts. | [`oim.algs.CEM`](oim/algs/cem.py) |
+| [DIAL-MPC](https://arxiv.org/abs/2409.15610) | MPPI with dual-loop, annealed sampling covariance. | [`oim.algs.DIAL`](oim/algs/dial.py) |
+| [MPPI-CMA](https://arxiv.org/pdf/2506.22087) | MPPI with an adaptive sampling distribution. | [`oim.algs.MppiCma`](oim/algs/mppi_cma.py) |
+| [MTP](https://arxiv.org/abs/2505.01059) | Structured tensor sampling mixed with a local CEM update. | [`oim.algs.MTP`](oim/algs/mtp.py) |
+| [CBO](https://en.wikipedia.org/wiki/Consensus_based_optimization) | Simulate an SDE that pulls samples toward a consensus point. | [`oim.algs.CBO`](oim/algs/cbo.py) |
+| [Evosax](https://github.com/RobertTLange/evosax/) | Any of the 30+ evolution strategies in `evosax` (CMA-ES, DE, …). | [`oim.algs.Evosax`](oim/algs/evosax.py) |
 
-## News
+## Setup
 
-- February 15, 2026. Our preferred package manager is now
-  [uv](https://docs.astral.sh/uv/), which is lighter weight and offers improved
-  reproducibility via `uv.lock`. Conda use is still possible, but we recommend
-  switching to uv for the best experience. Note that `hydrax` now requires CUDA 13.
-- April 13, 2024. Large changes to the core `hydrax` functionality + some
-  breaking changes.
-    - Splines (and their knots) are now the default parameterization of the
-      control signals and decision variables! Before, it was always assumed that
-      every control step applied a zero-order hold. This is now a special case
-      of the new spline parameterization.
-    - All "time-based" variables are now specified in the controller.
-      Previously, variables like the planning horizon and number of sim steps
-      per control step were specified in the task. Now, the main variables to
-      specify are `plan_horizon` (the length of the planning horizon in
-      seconds), `num_knots` (the number of spline knots to plan with), and `dt`
-      (the planning time step (in the model XML)). **This is a breaking
-      change!**
+Requires Python ≥ 3.12 and CUDA 13. Using [uv](https://docs.astral.sh/uv/):
 
-## Setup (uv)
-
-Clone this repository:
 ```bash
-git clone https://github.com/vincekurtz/hydrax.git
-cd hydrax
-```
-
-Install the package and dependencies:
-```bash
+git clone https://github.com/NikolaRaicevic2001/Object-Informed-Manipulation-MJX.git
+cd Object-Informed-Manipulation-MJX
 uv sync
 ```
 
-You can use `uv` to run examples and tests directly:
-```bash
-uv run python examples/pendulum.py mppi  # pendulum swing up with MPPI
-uv run pytest  # run unit tests
-```
+Then either prefix commands with `uv run`, or activate the environment with
+`source .venv/bin/activate`. A conda environment is also provided
+(`conda env create -f environment.yml && pip install -e .`).
 
-Or you can activate the virtual environment (created by `uv sync`) and run
-things directly:
-```bash
-source .venv/bin/activate
-python examples/pendulum.py mppi  # pendulum swing up with MPPI
-pytest  # run unit tests
-```
+Run the tests with `uv run pytest`.
 
-## Setup (conda)
+## Quick start
 
-Set up a conda env with cuda support (first time only):
+The push-T-through-clutter task is the main demo: the object must reach an
+SE(2) goal pose while avoiding three static obstacles, which requires
+non-myopic reasoning — a greedy pusher gets stuck behind an obstacle.
 
 ```bash
-conda env create -f environment.yml
+# ADMM object-informed MPPI, 2-DOF point pusher
+uv run python examples/pusht.py admm
+
+# ...on a 6-DoF UFACTORY xArm6 with a rigid pushing stick
+uv run python examples/pusht.py --robot xarm6 admm
+
+# Mix and match the inner solvers of the two ADMM subproblems
+uv run python examples/pusht.py admm --robot-opt mppi --object-opt cbo
+
+# Record an mp4 into oim/recordings/ (requires ffmpeg)
+uv run python examples/pusht.py admm --record
 ```
 
-Enter the conda env:
+Flat (non-hierarchical) baselines on the same task, for comparison:
 
 ```bash
-conda activate hydrax
+uv run python examples/pusht.py mppi
+uv run python examples/pusht.py ps
 ```
 
-Install the package and dependencies:
+ADMM knobs: `--n-admm` (max iterations per control step), `--rho` (initial
+penalty $\rho$), `--gamma` (proximal weight $\gamma$), `--seed`.
 
-```bash
-pip install -e .
-```
+Other demos inherited from the base library live in [`examples/`](examples/)
+(pendulum, cart-pole, humanoid standup and mocap tracking, cube rotation,
+walker, crane, …).
 
-(Optional) Set up pre-commit hooks:
+## Mathematical formulation
 
-```bash
-pre-commit autoupdate
-pre-commit install
-```
+We plan for a robot manipulating an unactuated rigid object through contact.
+Rather than treating this as one monolithic contact-implicit problem, we model
+it as **two subsystems coupled only through the contact wrench**, and reach
+agreement on that wrench with ADMM.
 
-(Optional) Run unit tests:
+### Subsystem models
 
-```bash
-pytest
-```
-
-## Examples
-
-Launch an interactive pendulum swingup simulation with predictive sampling:
-
-```bash
-python examples/pendulum.py ps
-```
-
-Launch an interactive humanoid standup simulation (shown above) with MPPI and
-online domain randomization:
-
-```bash
-python examples/humanoid_standup.py
-```
-
-Other demos can be found in the `examples` folder.
-
-## Design your own task
-
-Hydrax considers optimal control problems of the form
+The robot is input-affine, with $x^r_t$ its configuration and $u^r_t$ its
+control:
 
 ```math
-\begin{align}
-\min_{u_t} & \sum_{t=0}^{T} \ell(x_t, u_t) + \phi(x_{T+1}), \\
-\mathrm{s.t.}~& x_{t+1} = f(x_t, u_t),
-\end{align}
+x^r_{t+1} = f_r(x^r_t) + g_r(x^r_t)\,u^r_t + h_r(x^r_t)\,w^r_t .
 ```
-where $x_t$ is the system state and $u_t$ is the control input at time $t$, and
-the system dynamics $f(x_t, u_t)$ are defined by a mujoco MJX model.
 
-To design a new task, you'll need to specify the cost ($\ell$, $\phi$) and the
-dynamics ($f$). You can do this by creating a new class that inherits from
-[`hydrax.task_base.Task`](hydrax/task_base.py):
+The object is unactuated and moves only through the contact wrench
+$w^o_t \triangleq [f_x,\, f_y,\, \tau]^\top \in \mathbb{R}^{p^o}$, which the
+object-level planner treats as a *decision variable* rather than as the outcome
+of complementarity constraints:
+
+```math
+x^o_{t+1} = f_o(x^o_t) + h_o(x^o_t)\,w^o_t .
+```
+
+For quasi-static planar pushing the object's twist is proportional to the
+applied wrench through the **ellipsoidal limit surface**, giving a closed-form
+model with no simulator in the loop:
+
+```math
+\dot{x}^o = D\,w^o, \qquad
+D \triangleq \operatorname{diag}\big(\mu m g,\ \mu m g,\ c\,r\,\mu m g\big)^{-1},
+```
+
+```math
+x^o_{t+1} = x^o_t + \Delta t\, D\, w^o_t ,
+```
+
+with $\mu$ the friction coefficient, $m$ the object mass, and $c, r$ the
+limit-surface pressure coefficient and characteristic radius. Note that
+$D^{-1}$ is exactly the **friction-cone limit** — the largest wrench the
+support surface can transmit — which is reused below as a natural normalizer.
+
+### Joint problem
+
+Over a horizon $H$, with $\mathbf{Z} \triangleq \{z_t\}$ the shared consensus
+variable:
+
+```math
+\begin{aligned}
+\min_{\mathbf{W}^o,\, \mathbf{U}^r,\, \mathbf{Z}} \quad
+& \sum_{t=0}^{H-1}\Big(\ell_o(x^o_t) + \ell_r(x^r_t, u^r_t)\Big) + \ell_f(x^o_H) \\
+\text{s.t.}\quad
+& x^o_{t+1} = \text{object dynamics via } w^o_t, \\
+& x^r_{t+1} = \text{robot dynamics via } u^r_t, \quad (x^r_t, u^r_t) \in \mathcal{C}, \\
+& w^o_t = z_t, \qquad \hat{w}^o_t = z_t .
+\end{aligned}
+```
+
+The realized wrench $\hat{w}^o_t$ is **not** a decision variable — it is
+whatever the simulator reports once $\mathbf{U}^r$ has been rolled out.
+Splitting $\mathbf{W}^o$ from $\mathbf{U}^r$ through $z_t$ is what lets the two
+planners run independently.
+
+### ADMM decomposition
+
+This is the $N = 2$ case of global-variable-consensus ADMM. Extraction maps
+$A^i$ pull each block's own estimate of the wrench:
+
+```math
+A^o(\mathbf{U}^o)_t = w^o_t,
+\qquad
+A^r(\mathbf{U}^r)_t = \hat{w}^o_t ,
+```
+
+$A^o$ reads the object planner's proposal straight off its decision variable,
+while $A^r$ reads the wrench the robot's motion *actually* imparts, from the
+simulator's contact forces. Each ADMM iteration $l$ runs four steps.
+
+**1 — Subproblem updates.** Each block minimizes its own cost plus a proximal
+term and the consensus penalty, both evaluated inside the sampler's rollout
+cost:
+
+```math
+\mathbf{U}^{o,(l+1)} = \arg\min_{\mathbf{U}^o}
+\Big\{ J_o(\mathbf{U}^o)
++ \tfrac{\gamma}{2}\big\|\mathbf{U}^o - \mathbf{U}^{o,(l)}\big\|^2
++ \tfrac{\rho}{2}\sum_{t} \big\| A^o(\mathbf{U}^o)_t - z^{(l)}_t + y^{o,(l)}_t \big\|^2 \Big\}
+```
+
+```math
+\mathbf{U}^{r,(l+1)} = \arg\min_{\mathbf{U}^r}
+\Big\{ J_r(\mathbf{U}^r)
++ \tfrac{\gamma}{2}\big\|\mathbf{U}^r - \mathbf{U}^{r,(l)}\big\|^2
++ \tfrac{\rho}{2}\sum_{t} \big\| A^r(\mathbf{U}^r)_t - z^{(l)}_t + y^{r,(l)}_t \big\|^2 \Big\}
+```
+
+The proximal term $\gamma > 0$ acts as inertia between iterations. It prevents
+the radical trajectory shifts that non-convex contact dynamics otherwise
+induce, and supplies the strong convexity that non-convex ADMM convergence
+results require.
+
+**2 — Consensus update.** The wrench space is unconstrained, so the projection
+$\Pi_\mathcal{Z}$ is the identity and the update is a plain average:
+
+```math
+z^{(l+1)}_t = \tfrac{1}{2}\Big( A^o(\mathbf{U}^{o,(l+1)})_t + y^{o,(l)}_t
++ A^r(\mathbf{U}^{r,(l+1)})_t + y^{r,(l)}_t \Big)
+```
+
+**3 — Dual update.** The scaled duals integrate the disagreement, so a wrench
+the robot repeatedly fails to produce is penalized ever more heavily until both
+planners settle on something mutually feasible:
+
+```math
+y^{i,(l+1)}_t = y^{i,(l)}_t + A^i(\mathbf{U}^{i,(l+1)})_t - z^{(l+1)}_t,
+\qquad i \in \{o, r\}
+```
+
+**4 — Adaptive penalty and variance.** From the primal and dual residuals
+$r^{(l+1)}$, $d^{(l+1)}$:
+
+```math
+\rho \leftarrow
+\begin{cases}
+2\rho, & \|r^{(l+1)}\| > 10\,\|d^{(l+1)}\| \\
+\rho/2, & \|d^{(l+1)}\| > 10\,\|r^{(l+1)}\| \\
+\rho, & \text{otherwise}
+\end{cases}
+\qquad
+\Sigma_u^{(l+1)} \leftarrow \max\big(\Sigma_{\min},\, \kappa\,\|r^{(l+1)}\|\big)
+```
+
+Annealing the exploration covariance with the residual makes the planners
+explore widely while they disagree and quieten down as they converge,
+suppressing the jitter a fixed $\Sigma_u$ injects near agreement.
+
+### Algorithm
+
+> **Given** state $x_0$, previous $(\mathbf{U}^o, \mathbf{U}^r, \mathbf{Z}, \mathbf{Y}^o, \mathbf{Y}^r)$, parameters $\rho, \gamma$
+> 1. Warm-start all five by shifting the previous solution one step
+> 2. **for** $l = 0, \dots, N_{\mathrm{ADMM}} - 1$:
+> 3. &nbsp;&nbsp;&nbsp;&nbsp; Object update — sampling MPC with the proximal + consensus penalty
+> 4. &nbsp;&nbsp;&nbsp;&nbsp; Robot update — sampling MPC on the real MJX model, same penalties
+> 5. &nbsp;&nbsp;&nbsp;&nbsp; Consensus update $z^{(l+1)}$
+> 6. &nbsp;&nbsp;&nbsp;&nbsp; Dual updates $y^{o,(l+1)},\ y^{r,(l+1)}$
+> 7. &nbsp;&nbsp;&nbsp;&nbsp; Adapt $\rho$; anneal $\Sigma_u$
+> 8. &nbsp;&nbsp;&nbsp;&nbsp; **break** if $\|r\| \le \epsilon_r$ and $\|d\| \le \epsilon_s$
+> 9. Apply $u^r_0$, shift, observe $x_1$
+
+The loop is a `jax.lax.while_loop`, so the early exit survives `jax.jit` and
+the whole control step compiles to a single kernel.
+
+### Cost functions
+
+The object-level cost tracks task-space progress and obstacle clearance:
+
+```math
+\ell_o(x^o_t) = w^o_d\, d^2(x^o_t, g) + w^o_f \big(\max(\lambda_t - f_0,\, 0)\big)^2 ,
+```
+
+```math
+d^2(x^o, g) = \|p^o - p^g\|^2
++ w^o_\theta \left( \cos^{-1}\!\Big( \tfrac{\operatorname{tr}(R^{o\top} R^g) - 1}{2} \Big) \right)^2 .
+```
+
+The robot-level cost shapes the end-effector into a good pushing pose:
+
+```math
+\ell_r(x^r_t) = w_{ee} \max\big(\|p^{ee}_t - p^o_t\|^2 - r_0^2,\ 0\big)
++ w_{\text{align}}\, \psi_{\text{align}} + w_{\text{tilt}}\, \psi_{\text{tilt}} ,
+```
+
+```math
+\psi_{\text{align}} = \max\big(\gamma_0 - \cos\angle(p^o_t - p^{ee}_t,\ p^{o*}_t - p^o_t),\ 0\big),
+\qquad
+\psi_{\text{tilt}}(R) = \sqrt{\varrho^2 + \varphi^2} .
+```
+
+The first term pulls the end-effector toward the object but goes slack inside a
+radius $r_0$; $\psi_{\text{align}}$ keeps it *behind* the object relative to
+the goal; $\psi_{\text{tilt}}$ penalizes roll/pitch away from vertical. The
+robot problem additionally carries the coupling cost
+$\ell_c(x^o_t, x^{o*}_t) = d^2(x^o_t, x^{o*}_t)$ against the object planner's
+own nominal trajectory.
+
+### Implementation notes
+
+Places where the code deliberately departs from the formulation above:
+
+- **Penalty normalization.** The penalty and residuals are divided by the
+  friction-cone limit $D^{-1}$ before squaring. Unnormalized, contact forces of
+  ~10 N give a penalty of ~10², which swamps the task costs (~1) and drives the
+  robot to optimize wrench matching instead of reaching the object. This is a
+  diagonal preconditioning of the consensus constraint applied identically to
+  both blocks, so the fixed point is unchanged, and it makes $\rho$,
+  $\epsilon_r$ and $\epsilon_s$ scale-free.
+- **Variance annealing is additive.** Because any sampler can be plugged into
+  either block and most do not expose a mutable covariance, the wrappers *add*
+  a perturbation of scale $\mathrm{clip}(\kappa\|r\|,\ \sigma_{\min},\ \sigma_{\max})$
+  on top of whatever the injected optimizer proposes, rather than replacing
+  $\Sigma_u$. The upper clip is required: $\kappa\|r\|$ is otherwise an
+  unbounded positive feedback loop.
+- **Obstacle clearance is geometric.** The object block has no simulator, so
+  $\ell_o$ uses a signed-distance hinge on the object footprint rather than the
+  simulator contact force $\lambda_t$.
+- **Dual anti-windup.** Duals are clipped to $\pm y_{\max}$.
+- **Horizons.** The formulation permits $H^c \le \min(H^o, H^r)$; the
+  implementation uses $H^o = H^r = H^c$, enforced in the `ADMM` constructor.
+
+## Code map
+
+| Concept | Code |
+| --- | --- |
+| ADMM loop, consensus/dual/penalty updates | [`oim/algs/admm.py`](oim/algs/admm.py) — `ADMM`, `ConsensusSpace`, `WrenchConsensus` |
+| Object / robot subproblem wrappers | `ObjectSubproblem`, `RobotSubproblem` (same file) |
+| Task-side contract for ADMM | [`oim/task_base.py`](oim/task_base.py) — `ConsensusTask` |
+| Analytic object models (limit surface, SDF geometry) | [`oim/objects/`](oim/objects/) |
+| Push-T task, both embodiments | [`oim/tasks/pusht.py`](oim/tasks/pusht.py) |
+| Simulation driver, video recording | [`oim/simulation/deterministic.py`](oim/simulation/deterministic.py) |
+
+Both subproblems only ever call `sample_knots` / `update_params` on their
+injected optimizer, so **any** `SamplingBasedController` works in either slot —
+that is what makes `--robot-opt` / `--object-opt` interchangeable.
+
+The consensus penalty is owned by `ConsensusSpace` and applied by the ADMM
+layer to *both* blocks. Tasks are deliberately prevented from adding their own
+(`robot_running_cost` receives no $z$, $y$ or $\rho$), so the two blocks cannot
+silently drift into scoring the consensus variable differently.
+
+## Designing a task
+
+An ordinary sampling-based MPC problem
+
+```math
+\min_{u} \ \sum_t \ell(x_t, u_t) + \phi(x_{T+1}) \quad \text{s.t.} \quad x_{t+1} = f(x_t, u_t)
+```
+
+needs only a MuJoCo model plus two cost methods:
 
 ```python
-class MyNewTask(Task):
-    def __init__(self, ...):
-        # Create or load a mujoco model defining the dynamics (f)
-        mj_model = ...
+class MyTask(Task):
+    def __init__(self):
         super().__init__(mj_model, ...)
 
-    def running_cost(self, x: mjx.Data, u: jax.Array) -> float:
-        # Implement the running cost (l) here
-        return ...
-
-    def terminal_cost(self, x: jax.Array) -> float:
-        # Implement the terminal cost (phi) here
-        return ...
+    def running_cost(self, x: mjx.Data, u: jax.Array) -> jax.Array: ...
+    def terminal_cost(self, x: mjx.Data) -> jax.Array: ...
 ```
 
-
-The dynamics ($f$) are specified by a `mujoco.MjModel` that is passed to the
-constructor. Other constructor arguments specify the planning horizon $T$ and
-other details.
-
-For the cost, simply implement the `running_cost` ($\ell$) and `terminal_cost`
-($\phi$) methods.
-
-See [`hydrax.tasks`](hydrax/tasks) for some example task implementations.
-
-## Implement your own control algorithm
-
-Hydrax considers sampling-based MPC algorithms that follow the following
-[generic structure](https://arxiv.org/abs/2409.14562):
-
-![Generic sampling-based MPC algorithm block](img/spc_alg.png)
-
-The meaning of the parameters $\theta$ differ depending on the algorithm. In
-predictive sampling, for example, $\theta$ is the mean of a Gaussian
-distribution that the controls $U = [u_0, u_1, ...]$ are sampled from.
-
-To implement a new planning algorithm, you'll need to inherit from
-[`hydrax.alg_base.SamplingBasedController`](hydrax/alg_base.py) and implement
-the three methods shown below:
+To additionally support ADMM, mix in [`ConsensusTask`](oim/task_base.py) and
+declare the object-level subproblem and the consensus variable:
 
 ```python
-class MyControlAlgorithm(SamplingBasedController):
-
-    def init_params(self) -> Any:
-        # Initialize the policy parameters (theta).
-        ...
-        return params
-
-    def sample_knots(self, params: Any) -> Tuple[jax.Array, Any]:
-        # Sample the spline knots U from the policy. Return the samples
-        # and the (updated) parameters.
-        ...
-        return controls, params
-
-    def update_params(self, params: Any, rollouts: Trajectory) -> Any:
-        # Update the policy parameters (theta) based on the trajectory data
-        # (costs, controls, observations, etc) stored in the rollouts.
-        ...
-        return new_params
+class MyTask(Task, ConsensusTask):
+    consensus_dim              # dimension of z
+    consensus_scale()          # characteristic magnitude of z (normalizer)
+    object_dynamics()          # closed-form x^o_{t+1} = f^o(x^o_t, w_t)
+    object_running_cost()      # l_o
+    object_terminal_cost()     # l_f
+    object_state_from_robot()  # pull x^o out of the robot's MJX state
+    realized_consensus()       # A^r: extraction map, read from the simulator
+    robot_running_cost()       # J_r = l_o + l_r + l_c  (no ADMM penalty!)
+    robot_terminal_cost()
 ```
 
-These three methods define a unique sampling-based MPC algorithm. Hydrax takes
-care of the rest, including parallelizing rollouts on GPU and collecting the
-rollout data in a [`Trajectory`](hydrax/alg_base.py) object.
+To implement a new *sampler*, subclass
+[`SamplingBasedController`](oim/alg_base.py) and provide `init_params`,
+`sample_knots` and `update_params`; parallel rollouts, spline
+parameterization, domain randomization and risk aggregation are handled for
+you. Such a sampler is immediately usable as either ADMM subproblem solver.
 
-**Note**: because of
-[the way JAX handles randomness](https://jax.readthedocs.io/en/latest/random-numbers.html),
-we assume the PRNG key is stored as one of the parameters $\theta$. This is why
-`sample_knots` returns updated parameters along with the control samples
-$U^{(1:N)}$.
+## Domain randomization and risk
 
-For some examples, take a look at [`hydrax.algs`](hydrax/algs).
-
-## Domain Randomization
-
-One benefit of GPU-based simulation is the ability to roll out trajectories with
-different model parameters in parallel. Such domain randomization can improve
-robustness and help reduce the sim-to-real gap.
-
-Hydrax provides tools to make online domain randomization easy. In particular,
-you can add domain randomization to any task by overriding the
-`domain_randomize_model` and `domain_randomize_data` methods of a given
-[`Task`](hydrax/task_base.py). For example:
+Rolling out across perturbed models in parallel is nearly free on GPU.
+Override `domain_randomize_model` / `domain_randomize_data` on a task, then
+pass `num_randomizations` to any controller. Costs are aggregated across
+domains by a [`RiskStrategy`](oim/risk.py): `AverageCost` (default),
+`WorstCase`, `BestCase`, `ExponentialWeightedAverage`, `ValueAtRisk`, or
+`ConditionalValueAtRisk`.
 
 ```python
-class MyDomainRandomizedTask(Task):
-    ...
-
-    def domain_randomize_model(self, rng: jax.Array) -> Dict[str, jax.Array]:
-        """Randomize the friction coefficients."""
-        n_geoms = self.model.geom_friction.shape[0]
-        multiplier = jax.random.uniform(rng, (n_geoms,), minval=0.5, maxval=2.0)
-        new_frictions = self.model.geom_friction.at[:, 0].set(
-            self.model.geom_friction[:, 0] * multiplier
-        )
-        return {"geom_friction": new_frictions}
-
-    def domain_randomize_data(self, data: mjx.Data, rng: jax.Array) -> Dict[str, jax.Array]:
-        """Randomly shift the measured configurations."""
-        shift = 0.005 * jax.random.normal(rng, (self.model.nq,))
-        return {"qpos": data.qpos + shift}
-```
-These methods return a dictionary of randomized parameters, given a particular
-random seed (`rng`). Hydrax takes care of the details of applying these
-parameters to the model and data, and performing rollouts in parallel.
-
-To use a domain randomized task, you'll need to tell the planner how many random
-models to use with the `num_randomizations` flag. For example,
-```python
-task = MyDomainRandomizedTask(...)
 ctrl = PredictiveSampling(
-    task,
-    num_samples=32,
-    noise_level=0.1,
-    num_randomizations=16,
-)
-```
-sets up a predictive sampling controller that rolls out 32 control sequences
-across 16 domain randomized models.
-
-The resulting [`Trajectory`](hydrax/alg_base.py) rollouts will have
-dimensions `(num_randomizations, num_samples, num_time_steps, ...)`.
-
-## Risk Strategies
-
-With domain randomization, we need to somehow aggregate costs across the
-different domains. By default, we take the average cost over the randomizations,
-similar to domain randomization in reinforcement learning. Other strategies are
-available via the [`RiskStrategy`](hydrax/risk.py) interface.
-
-For example, to plan using the worst-case maximum cost across randomizations:
-
-```python
-from hydrax.risk import WorstCase
-
-...
-
-task = MyDomainRandomizedTask(...)
-ctrl = PredictiveSampling(
-    task,
-    num_samples=32,
-    noise_level=0.1,
-    num_randomizations=16,
-    risk_strategy=WorstCase(),
+    task, num_samples=32, noise_level=0.1,
+    num_randomizations=16, risk_strategy=WorstCase(),
 )
 ```
 
-Available risk strategies:
+Rollouts then have shape `(num_randomizations, num_samples, num_time_steps, ...)`.
 
-| Strategy | Description | Import |
-| --- | --- | --- |
-| Average (default) | Take the expected cost across randomizations. | [`hydrax.risk.AverageCost`](hydrax/risk.py) |
-| Worst-case | Take the maximum cost across randomizations. | [`hydrax.risk.WorstCase`](hydrax/risk.py) |
-| Best-case | Take the minimum cost across randomizations. | [`hydrax.risk.BestCase`](hydrax/risk.py) |
-| Exponential | Take an exponentially weighted average with parameter $\gamma$. This strategy could be risk-averse ($\gamma > 0$) or risk-seeking ($\gamma < 0$).  | [`hydrax.risk.ExponentialWeightedAverage`](hydrax/risk.py) |
-| VaR | Use the [Value at Risk (VaR)](https://en.wikipedia.org/wiki/Value_at_risk). | [`hydrax.risk.ValueAtRisk`](hydrax/risk.py) |
-| CVaR | Use the [Conditional Value at Risk (CVaR)](https://en.wikipedia.org/wiki/Expected_shortfall). | [`hydrax.risk.ConditionalValueAtRisk`](hydrax/risk.py) |
+## Other utilities
 
-## MuJoCo Warp (Experimental)
-
-Hydrax includes some preliminary experimental support for using [MuJoCo
-Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) as the simulation backend
-for performing rollouts, instead of JAX. This may offer some performance
-benefits over JAX.
-
-To try MjWarp with Hydrax, simply specify `impl="warp"` when constructing a
-task, e.g.,
-```python
-from hydrax.tasks.pendulum import Pendulum
-
-task = Pendulum(impl="warp")
-```
-
-## Open-Loop Trajectory Optimization
-
-While `hydrax` is primarily designed for sampling-based MPC, it can also be used
-for [offline sampling-based trajectory optimization](hydrax/open_loop.py). This
-includes support for various interpolation schemes, domain randomization, risk
-strategies, and any of the optimization algorithms described above.
-
-Performing open-loop trajectory optimization is as simple as calling the
-`trajectory_optimization` function. For example, to produce a cart-pole swingup
-trajectory using CEM:
-
-```python
-from hydrax.tasks.cart_pole import CartPole
-from hydrax.algs import CEM
-from hydrax.open_loop import trajectory_optimization, playback
-
-# Define the task (system to be optimized).
-task = CartPole()
-
-# Define the optimization algorithm, planning horizon, and other details.
-ctrl = CEM(
-    task,
-    num_samples=128,
-    num_elites=3,
-    sigma_start=0.5,
-    sigma_min=0.1,
-    spline_type="cubic",
-    plan_horizon=2.0,
-    num_knots=4,
-)
-
-# Set the initial state.
-mjx_data = task.make_data()
-
-# Run trajectory optimization, then play back the resulting trajectory.
-optimized_trajectory = trajectory_optimization(ctrl, mjx_data, iterations=10)
-playback(optimized_trajectory, ctrl)
-```
-
-For further details, see the
+**Open-loop trajectory optimization.** The same controllers can optimize a
+trajectory offline via [`oim/open_loop.py`](oim/open_loop.py) — see
 [`examples/cart_pole_trajectory_optimization.py`](examples/cart_pole_trajectory_optimization.py).
+
+**MuJoCo Warp (experimental).** Pass `impl="warp"` to a task constructor, or
+`--warp` to the examples, to use
+[MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) instead of JAX
+for rollouts.
+
+**Asynchronous simulation.**
+[`oim/simulation/asynchronous.py`](oim/simulation/asynchronous.py) runs
+the controller and simulator in separate processes, for a more realistic
+picture of closed-loop latency.
+
+**Recording.** Pass `record_video=True` to `run_interactive` (or `--record` to
+the examples) to write an mp4 into [`oim/recordings/`](oim/recordings/).
+Requires `ffmpeg` on the `PATH`.
 
 ## Citation
 
-```
-@misc{kurtz2024hydrax,
-  title={Hydrax: Sampling-based model predictive control on GPU with JAX and MuJoCo MJX},
-  author={Kurtz, Vince},
-  year={2024},
-  note={https://github.com/vincekurtz/hydrax}
+If you use this work, please cite:
+
+```bibtex
+@article{raicevic2026objectinformed,
+  title   = {Object-Informed Model Predictive Path Integral Control
+             for Non-Prehensile Robot Manipulation},
+  author  = {Raicevic, Nikola and Kim, Hyomuk and Mulla, Shahid and
+             Radhakrishnan, Bharath Raam and Yu, Chenbin and
+             Lee, Ki Myung Brian and Atanasov, Nikolay},
+  year    = {2026}
 }
 ```
+
+## Acknowledgements
+
+This project is a fork of [**Hydrax**](https://github.com/vincekurtz/hydrax) by
+Vince Kurtz, which provides the sampling-based MPC framework — the
+controller/task abstractions, spline parameterization, parallel MJX rollouts,
+domain randomization, and every non-ADMM algorithm listed above. The ADMM
+object-informed manipulation layer is our addition. Hydrax is itself inspired
+by [MJPC](https://github.com/google-deepmind/mujoco_mpc).
+
+```bibtex
+@misc{kurtz2024hydrax,
+  title  = {Hydrax: Sampling-based model predictive control on GPU
+            with JAX and MuJoCo MJX},
+  author = {Kurtz, Vince},
+  year   = {2024},
+  note   = {https://github.com/vincekurtz/hydrax}
+}
+```
+
+The xArm6 model derives from [UFACTORY](https://www.ufactory.cc/)'s published
+URDF; the Unitree G1 model is from
+[`unitree_ros`](https://github.com/unitreerobotics/unitree_ros) (see
+[`oim/models/g1/LICENSE`](oim/models/g1/LICENSE)). Motion-capture
+references come from the
+[LocoMuJoCo](https://huggingface.co/datasets/robfiras/loco-mujoco-datasets)
+dataset.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

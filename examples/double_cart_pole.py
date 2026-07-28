@@ -2,9 +2,9 @@ import argparse
 
 import mujoco
 
-from hydrax.algs import PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.double_cart_pole import DoubleCartPole
+from oim.algs import PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.double_cart_pole import DoubleCartPole
 
 """
 Run an interactive simulation of a double pendulum on a cart. Only the cart

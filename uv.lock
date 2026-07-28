@@ -469,41 +469,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hydrax"
-version = "0.0.2"
-source = { editable = "." }
-dependencies = [
-    { name = "evosax" },
-    { name = "flax" },
-    { name = "huggingface-hub" },
-    { name = "interpax" },
-    { name = "jax", extra = ["cuda13"] },
-    { name = "matplotlib" },
-    { name = "mujoco" },
-    { name = "mujoco-mjx" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "warp-lang" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "evosax", specifier = ">=0.2.0" },
-    { name = "flax", specifier = ">=0.12.0" },
-    { name = "huggingface-hub", specifier = ">=0.29.3" },
-    { name = "interpax", specifier = ">=0.3.12" },
-    { name = "jax", extras = ["cuda13"], specifier = ">=0.8.0" },
-    { name = "matplotlib", specifier = ">=3.10.0" },
-    { name = "mujoco", specifier = ">=3.8.0" },
-    { name = "mujoco-mjx", specifier = ">=3.8.0" },
-    { name = "pre-commit", specifier = ">=4.0.1" },
-    { name = "pytest", specifier = ">=8.3.3" },
-    { name = "ruff", specifier = "==0.15.2" },
-    { name = "warp-lang", specifier = ">=1.12.1,<1.13.0" },
-]
-
-[[package]]
 name = "identify"
 version = "2.6.16"
 source = { registry = "https://pypi.org/simple" }
@@ -1213,6 +1178,41 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3d/24/8ce3e8564e1ebf468b2b9a838f2a6c8f357ad63bec353a6a5c38b3f79250/nvidia_nvvm-13.1.115-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:6fdf483d85d9903f9cbf84c41d99221a86e0c0511d05de3d237b4ab69c11627e", size = 63386729, upload-time = "2026-01-13T22:51:00.152Z" },
     { url = "https://files.pythonhosted.org/packages/e6/01/7dc8dc16b86dd173dc786f454eff688efa4fd61e9eff5f582aad90621e4c/nvidia_nvvm-13.1.115-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:860706eb4b5851ac1d2bacf574b582ec66901acc31051da9b0cf9a2c910a9aa9", size = 61001803, upload-time = "2026-01-13T22:50:40.768Z" },
     { url = "https://files.pythonhosted.org/packages/bc/53/dc1cc7970beb56ec6ce3717fd110b04f57ee338556d3e06114a0bfbc267d/nvidia_nvvm-13.1.115-py3-none-win_amd64.whl", hash = "sha256:795c08d8a9d2f184dbd6ffcf049ce2ede5af1b77e7965e7936ef73125e7bee21", size = 55415346, upload-time = "2026-01-13T23:03:18.422Z" },
+]
+
+[[package]]
+name = "oim"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "evosax" },
+    { name = "flax" },
+    { name = "huggingface-hub" },
+    { name = "interpax" },
+    { name = "jax", extra = ["cuda13"] },
+    { name = "matplotlib" },
+    { name = "mujoco" },
+    { name = "mujoco-mjx" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "warp-lang" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "evosax", specifier = ">=0.2.0" },
+    { name = "flax", specifier = ">=0.12.0" },
+    { name = "huggingface-hub", specifier = ">=0.29.3" },
+    { name = "interpax", specifier = ">=0.3.12" },
+    { name = "jax", extras = ["cuda13"], specifier = ">=0.8.0" },
+    { name = "matplotlib", specifier = ">=3.10.0" },
+    { name = "mujoco", specifier = ">=3.8.0" },
+    { name = "mujoco-mjx", specifier = ">=3.8.0" },
+    { name = "pre-commit", specifier = ">=4.0.1" },
+    { name = "pytest", specifier = ">=8.3.3" },
+    { name = "ruff", specifier = "==0.15.2" },
+    { name = "warp-lang", specifier = ">=1.12.1,<1.13.0" },
 ]
 
 [[package]]

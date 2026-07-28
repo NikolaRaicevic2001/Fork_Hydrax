@@ -1,0 +1,868 @@
+"""ADMM-coordinated object/robot consensus planning.
+
+Implements the object-informed MPPI formulation, where a hierarchical
+object-level and robot-level sampling-based sub-optimizer reach consensus on
+a shared consensus variable z_t (e.g. a contact wrench) via ADMM
+(Alternating Direction Method of Multipliers). See the paper "Object-Informed
+Model Predictive Path Integral Control for Non-Prehensile Robot Manipulation"
+(Algorithm 4) for the underlying math.
+
+Both the object- and robot-level sub-optimizers are pluggable: any
+`oim.alg_base.SamplingBasedController` (MPPI, CBO, CEM, ...) can be
+injected as either, since this module only ever calls the two methods every
+such controller implements (`sample_knots`/`update_params`).
+"""
+
+from abc import ABC, abstractmethod
+from functools import partial
+from types import SimpleNamespace
+from typing import Any, Optional, Tuple
+
+import jax
+import jax.numpy as jnp
+from flax.struct import dataclass
+from mujoco import mjx
+
+from oim.alg_base import SamplingBasedController, Trajectory
+from oim.task_base import ConsensusTask
+
+
+class ConsensusSpace(ABC):
+    """A consensus variable space for ADMM, shared between two subproblems.
+
+    The consensus variable z_t must be *the same physical quantity, in the
+    same units and frame*, on both blocks -- the object block's proposed
+    value A^o and the robot block's realized value A^r. This class owns all
+    the math that touches z, so both blocks provably use identical
+    definitions rather than each hand-rolling their own copy.
+    """
+
+    dim: int
+
+    @abstractmethod
+    def normalize(self, v: jax.Array) -> jax.Array:
+        """Map a consensus-space value to dimensionless, O(1) units.
+
+        Used for both the penalty and the residual norms, so that `rho`,
+        `eps_r` and `eps_s` are scale-free and comparable against the task
+        costs regardless of the physical units z happens to carry.
+        """
+
+    def penalty_cost(
+        self, actual: jax.Array, z: jax.Array, dual: jax.Array, rho: jax.Array
+    ) -> jax.Array:
+        """(rho/2) * ||actual - z + dual||^2, in normalized units.
+
+        Collapses only the consensus dimension; the caller sums over the
+        horizon and samples. Shared by both blocks (paper eq. 24-25).
+        """
+        diff = self.normalize(actual - z + dual)
+        return 0.5 * rho * jnp.sum(diff**2, axis=-1)
+
+    def residual_norm(self, v: jax.Array) -> jax.Array:
+        """Norm of a residual, in the same normalized units as the penalty."""
+        return jnp.linalg.norm(self.normalize(v))
+
+    def z_update(
+        self,
+        a_o: jax.Array,
+        a_r: jax.Array,
+        dual_o: jax.Array,
+        dual_r: jax.Array,
+    ) -> jax.Array:
+        """z_t = 0.5*(a_o + dual_o + a_r + dual_r), paper eq. 26.
+
+        This is eq. 14 with N = 2 and the projection Pi_Z equal to the
+        identity (the consensus space is unconstrained).
+        """
+        return 0.5 * (a_o + dual_o + a_r + dual_r)
+
+    @abstractmethod
+    def dual_update(
+        self, actual: jax.Array, z: jax.Array, dual: jax.Array
+    ) -> jax.Array:
+        """Dual step y <- y + (A x - z), paper eq. 27."""
+
+
+class WrenchConsensus(ConsensusSpace):
+    """Planar contact wrench consensus z_t = [f_x, f_y, tau]; arrays (H, 3).
+
+    z is the wrench the robot applies *to the object*, expressed in the world
+    frame about the object's pose origin, in Newtons and Newton-metres. Both
+    blocks must report it that way:
+
+    * A^o: the object planner's proposed wrench, read directly off its own
+      decision variable (paper eq. 23).
+    * A^r: the wrench the robot's rolled-out motion actually imparts on the
+      object, read from the simulator's contact forces (paper eq. 23).
+
+    `scale` sets the characteristic magnitude used to normalize the penalty
+    and residuals. The natural choice is the friction-cone limit
+    (mu*m*g for forces, r*mu*m*g for the torque), which is exactly the
+    inverse of the limit-surface compliance D -- i.e. the normalized residual
+    measures disagreement as a *fraction of the maximum transmissible
+    wrench*. Without this the penalty (forces ~10 N, squared -> ~10^2)
+    dwarfs the task costs (~1) and the robot ends up optimizing wrench
+    matching to the exclusion of actually reaching the object.
+    """
+
+    dim = 3
+
+    def __init__(self, max_dual: float, scale: jax.Array = None) -> None:
+        """Set the dual anti-windup clip and the normalization scale.
+
+        Args:
+            max_dual: Maximum magnitude of the scaled dual variables, in the
+                same physical units as z (anti-windup; an extension beyond
+                the paper, which leaves the duals unbounded).
+            scale: Per-dimension characteristic magnitude of z. Defaults to
+                ones (no normalization).
+        """
+        self.max_dual = max_dual
+        self.scale = jnp.ones(self.dim) if scale is None else jnp.asarray(scale)
+
+    def normalize(self, v: jax.Array) -> jax.Array:
+        """Divide through by the per-dimension characteristic magnitude."""
+        return v / self.scale
+
+    def dual_update(
+        self, actual: jax.Array, z: jax.Array, dual: jax.Array
+    ) -> jax.Array:
+        """Dual + (actual - z), clipped to [-max_dual, max_dual]."""
+        return jnp.clip(dual + (actual - z), -self.max_dual, self.max_dual)
+
+
+def make_object_shim(task: ConsensusTask, dt: float) -> Any:
+    """Build a lightweight duck-typed task for the object-level optimizer.
+
+    The object subproblem samples in consensus space (dimension
+    `task.consensus_dim`), not robot actuator space, so a
+    `SamplingBasedController` (e.g. `MPPI`) built for the object side needs
+    its own small task-like object to construct against. `ObjectSubproblem`
+    never calls anything on this shim besides `.model.nu`/`.dt`/`.u_min`/
+    `.u_max`; all real cost and dynamics come from the real task's
+    `object_*` methods.
+
+    Args:
+        task: The real task, used only to read `consensus_dim`.
+        dt: The planning timestep for the object-level optimizer.
+
+    Returns:
+        A duck-typed object exposing `.model.nu`, `.dt`, `.u_min`, `.u_max`.
+    """
+    nu = task.consensus_dim
+    return SimpleNamespace(
+        model=SimpleNamespace(nu=nu),
+        dt=dt,
+        u_min=-jnp.inf * jnp.ones(nu),
+        u_max=jnp.inf * jnp.ones(nu),
+    )
+
+
+@dataclass
+class ADMMTrajectory(Trajectory):
+    """Trajectory with the realized consensus value A^r(U^r)_t at each step."""
+
+    consensus_values: jax.Array
+
+
+class ObjectSubproblem:
+    """Object-level ADMM subproblem: closed-form dynamics, pluggable optimizer.
+
+    Wraps any `SamplingBasedController` (built against a `make_object_shim`
+    task) to sample/reweight consensus-space decisions w^o_t. Rollout and
+    cost use `task.object_dynamics`/`object_running_cost`/`object_terminal_cost`
+    directly, since there's no MJX model on the object side.
+    """
+
+    def __init__(
+        self,
+        task: ConsensusTask,
+        optimizer: SamplingBasedController,
+        consensus: ConsensusSpace,
+        proximal_weight: float,
+    ) -> None:
+        """Pair the task with its injected sampling optimizer.
+
+        Args:
+            task: The real task, providing object-level dynamics/costs.
+            optimizer: Any `SamplingBasedController` built against a
+                `make_object_shim(task, ...)` task.
+            consensus: The consensus space used for the ADMM penalty.
+            proximal_weight: Weight (gamma) on the proximal term (eq. 24)
+                that anchors this ADMM iteration's update to the previous one.
+        """
+        self.task = task
+        self.optimizer = optimizer
+        self.consensus = consensus
+        self.proximal_weight = proximal_weight
+
+    def _rollout(self, obj_state0: jax.Array, ws: jax.Array) -> jax.Array:
+        """Scan the closed-form dynamics over a (H, dim) decision sequence."""
+
+        def step(
+            obj_state: jax.Array, w: jax.Array
+        ) -> Tuple[jax.Array, jax.Array]:
+            new_state = self.task.object_dynamics(obj_state, w)
+            return new_state, new_state
+
+        _, states = jax.lax.scan(step, obj_state0, ws)
+        return states
+
+    def optimize(
+        self,
+        obj_state0: jax.Array,
+        params: Any,
+        z: jax.Array,
+        dual_o: jax.Array,
+        rho: jax.Array,
+        prev_knots: jax.Array,
+        noise_scale: jax.Array,
+        rng: jax.Array,
+    ) -> Tuple[Any, jax.Array, jax.Array]:
+        """Run `optimizer.iterations` MPPI-style passes against a fixed target.
+
+        Args:
+            obj_state0: The object's current configuration x^o_0.
+            params: The object optimizer's current policy parameters.
+            z: The current consensus variable, (H, dim).
+            dual_o: The object block's scaled dual variable, (H, dim).
+            rho: The current ADMM penalty weight.
+            prev_knots: The previous ADMM iteration's knots, for the
+                proximal term (eq. 24).
+            noise_scale: Extra residual-scaled exploration noise (Alg. 4
+                step 8, generalized -- see module docstring).
+            rng: Random key for the extra noise and optimizer iterations.
+
+        Returns:
+            Updated params, the object's proposed decision W^o = params.mean
+            (in physical units), and its own nominal state reference under
+            those decisions.
+        """
+        opt = self.optimizer
+        scale = self.task.object_action_scale()
+
+        def _scan_body(params: Any, rng_i: jax.Array) -> Tuple[Any, None]:
+            knots, params = opt.sample_knots(params)
+            noise_rng, _ = jax.random.split(rng_i)
+            noise = noise_scale * jax.random.normal(noise_rng, knots.shape)
+            knots = jnp.clip(knots + noise, opt.task.u_min, opt.task.u_max)
+            ws = knots * scale  # (K, H, dim), physical units
+
+            states = jax.vmap(self._rollout, in_axes=(None, 0))(obj_state0, ws)
+            # J_o: dt-weighted running cost + terminal cost, matching the
+            # robot block's convention so the two blocks stay balanced.
+            running = self.task.dt * jax.vmap(
+                jax.vmap(self.task.object_running_cost)
+            )(states[:, :-1], ws[:, :-1])
+            terminal = jax.vmap(self.task.object_terminal_cost)(states[:, -1])
+
+            # Proximal term (gamma/2)||U^o - U^{o,(l)}||^2, paper eq. 24.
+            proximal = (
+                0.5
+                * self.proximal_weight
+                * jnp.sum((knots - prev_knots) ** 2, axis=(-2, -1))
+            )
+            terminal = terminal + proximal
+
+            # ADMM penalty (rho/2)||A^o(U^o)_t - z_t + y^o_t||^2, eq. 24.
+            # A^o reads the proposed wrench straight off the decision
+            # variable, so it is exactly `ws`.
+            penalty = self.consensus.penalty_cost(ws, z, dual_o, rho)
+            costs = jnp.concatenate([running, terminal[:, None]], axis=1)
+            costs = costs + penalty
+
+            rollouts = Trajectory(
+                controls=knots,
+                knots=knots,
+                costs=costs,
+                trace_sites=jnp.zeros((knots.shape[0], 1, 3)),
+            )
+            params = opt.update_params(params, rollouts)
+            return params, None
+
+        rngs = jax.random.split(rng, opt.iterations)
+        params, _ = jax.lax.scan(_scan_body, params, rngs)
+
+        w_obj = params.mean * scale
+        ref_states = self._rollout(obj_state0, w_obj)
+        return params, w_obj, ref_states
+
+
+class RobotSubproblem:
+    """Robot-level ADMM subproblem: real MJX contact, pluggable optimizer.
+
+    Reads `.model`/`.randomized_axes`/`.risk_strategy`/`.interp_func`/
+    `.num_randomizations`/`.ctrl_steps`/`.iterations` off the *injected*
+    optimizer generically (never off `self`), so domain randomization and
+    risk strategies keep working no matter which `SamplingBasedController`
+    subclass is plugged in.
+    """
+
+    def __init__(
+        self,
+        task: ConsensusTask,
+        optimizer: SamplingBasedController,
+        consensus: ConsensusSpace,
+        proximal_weight: float,
+    ) -> None:
+        """Pair the task with its injected sampling optimizer.
+
+        Args:
+            task: The real task (also a `Task`), providing the MJX model,
+                the robot-level task cost, and the A^r extraction map.
+            optimizer: Any `SamplingBasedController` built against `task`.
+            consensus: The consensus space. The ADMM penalty is added here,
+                by the same `consensus.penalty_cost` the object block uses,
+                so both blocks are guaranteed to score the consensus
+                variable identically.
+            proximal_weight: Weight (gamma) on the proximal term (eq. 25).
+        """
+        self.task = task
+        self.optimizer = optimizer
+        self.consensus = consensus
+        self.proximal_weight = proximal_weight
+
+    @partial(
+        jax.vmap,
+        in_axes=(None, None, None, 0, 0, None, None, None, None, None),
+    )
+    def _eval_rollouts_one(
+        self,
+        model: mjx.Model,
+        state: mjx.Data,
+        controls: jax.Array,
+        knots: jax.Array,
+        z: jax.Array,
+        dual_r: jax.Array,
+        rho: jax.Array,
+        obj_ref: jax.Array,
+        prev_knots: jax.Array,
+    ) -> Tuple[mjx.Data, ADMMTrajectory]:
+        """Roll out one control sequence, scored against the ADMM penalty.
+
+        Also returns the realized consensus value at each step.
+        """
+
+        def _scan_fn(
+            x: mjx.Data,
+            inputs: Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        ) -> Tuple[mjx.Data, Tuple[mjx.Data, jax.Array, jax.Array, jax.Array]]:
+            u, z_t, dual_t, ref_t = inputs
+            x = x.replace(ctrl=u)
+            x = mjx.step(model, x)
+            # J_r: the task's own cost, dt-weighted per oim convention.
+            cost = self.optimizer.dt * self.task.robot_running_cost(x, u, ref_t)
+            # A^r: the wrench the robot's motion actually imparts on the
+            # object, read from the simulator (paper eq. 23).
+            consensus_val = self.task.realized_consensus(x)
+            # ADMM penalty (rho/2)||A^r(U^r)_t - z_t + y^r_t||^2 (eq. 25).
+            # Added here, not inside the task, so it is literally the same
+            # function the object block uses.
+            cost = cost + self.consensus.penalty_cost(
+                consensus_val, z_t, dual_t, rho
+            )
+            sites = self.task.get_trace_sites(x)
+            return x, (x, cost, consensus_val, sites)
+
+        final_state, (states, costs, consensus_vals, trace_sites) = (
+            jax.lax.scan(_scan_fn, state, (controls, z, dual_r, obj_ref))
+        )
+
+        # Proximal term (gamma/2)||U^r - U^{r,(l)}||^2, paper eq. 25.
+        proximal = (
+            0.5 * self.proximal_weight * jnp.sum((knots - prev_knots) ** 2)
+        )
+        final_cost = self.task.robot_terminal_cost(final_state) + proximal
+        final_trace_sites = self.task.get_trace_sites(final_state)
+
+        costs = jnp.append(costs, final_cost)
+        trace_sites = jnp.append(trace_sites, final_trace_sites[None], axis=0)
+
+        return states, ADMMTrajectory(
+            controls=controls,
+            knots=knots,
+            costs=costs,
+            trace_sites=trace_sites,
+            consensus_values=consensus_vals,
+        )
+
+    def rollout_with_randomizations(
+        self,
+        state: mjx.Data,
+        tk: jax.Array,
+        knots: jax.Array,
+        rng: jax.Array,
+        z: jax.Array,
+        dual_r: jax.Array,
+        rho: jax.Array,
+        obj_ref: jax.Array,
+        prev_knots: jax.Array,
+    ) -> ADMMTrajectory:
+        """Like `SamplingBasedController.rollout_with_randomizations`.
+
+        z/dual_r/rho/obj_ref are shared (the fixed target every sample is
+        scored against), and the proximal anchor is threaded through too.
+        """
+        opt = self.optimizer
+        states = jax.vmap(lambda _, x: x, in_axes=(0, None))(
+            jnp.arange(opt.num_randomizations), state
+        )
+        if opt.num_randomizations > 1:
+            subrngs = jax.random.split(rng, opt.num_randomizations)
+            randomizations = jax.vmap(self.task.domain_randomize_data)(
+                states, subrngs
+            )
+            states = states.tree_replace(randomizations)
+
+        tq = jnp.linspace(tk[0], tk[-1], opt.ctrl_steps)
+        controls = opt.interp_func(tq, tk, knots)
+
+        _, rollouts = jax.vmap(
+            self._eval_rollouts_one,
+            in_axes=(
+                opt.randomized_axes,
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )(
+            opt.model,
+            states,
+            controls,
+            knots,
+            z,
+            dual_r,
+            rho,
+            obj_ref,
+            prev_knots,
+        )
+
+        costs = opt.risk_strategy.combine_costs(rollouts.costs)
+        return rollouts.replace(
+            costs=costs,
+            controls=rollouts.controls[0],
+            knots=rollouts.knots[0],
+            trace_sites=rollouts.trace_sites[0],
+            consensus_values=rollouts.consensus_values[0],
+        )
+
+    def optimize(
+        self,
+        state: mjx.Data,
+        params: Any,
+        z: jax.Array,
+        dual_r: jax.Array,
+        rho: jax.Array,
+        obj_ref: jax.Array,
+        prev_knots: jax.Array,
+        noise_scale: jax.Array,
+        rng: jax.Array,
+    ) -> Tuple[Any, ADMMTrajectory]:
+        """Run `optimizer.iterations` passes against a fixed target."""
+        opt = self.optimizer
+        tk = params.tk
+
+        def _scan_body(
+            params: Any, rng_i: jax.Array
+        ) -> Tuple[Any, ADMMTrajectory]:
+            knots, params = opt.sample_knots(params)
+            noise_rng, dr_rng = jax.random.split(rng_i)
+            noise = noise_scale * jax.random.normal(noise_rng, knots.shape)
+            knots = jnp.clip(knots + noise, self.task.u_min, self.task.u_max)
+            rollouts = self.rollout_with_randomizations(
+                state, tk, knots, dr_rng, z, dual_r, rho, obj_ref, prev_knots
+            )
+            params = opt.update_params(params, rollouts)
+            return params, rollouts
+
+        rngs = jax.random.split(rng, opt.iterations)
+        params, rollouts = jax.lax.scan(_scan_body, params, rngs)
+        rollouts_final = jax.tree.map(lambda x: x[-1], rollouts)
+        return params, rollouts_final
+
+    def nominal_realized_consensus(
+        self, state: mjx.Data, params: Any
+    ) -> jax.Array:
+        """Re-simulate `params.mean` alone to read the realized consensus.
+
+        The wrapped optimizer's update blends all samples into a new mean,
+        so there's no single winning rollout already computed to read A^r
+        off of. Uses `self.task.model` directly (not a domain-randomization
+        ensemble), since there's a single state here.
+        """
+        opt = self.optimizer
+        tk = params.tk
+        tq = jnp.linspace(tk[0], tk[-1], opt.ctrl_steps)
+        controls = opt.interp_func(tq, tk, params.mean[None, ...])[0]
+
+        def _scan_fn(x: mjx.Data, u: jax.Array) -> Tuple[mjx.Data, jax.Array]:
+            x = x.replace(ctrl=u)
+            x = mjx.step(self.task.model, x)
+            return x, self.task.realized_consensus(x)
+
+        _, consensus_vals = jax.lax.scan(_scan_fn, state, controls)
+        return consensus_vals
+
+
+@dataclass
+class ADMMParams:
+    """Warm-started policy parameters for the ADMM controller.
+
+    Attributes:
+        robot_params: The robot optimizer's own params (e.g. `MPPIParams`).
+        object_params: The object optimizer's own params.
+        z: The consensus variable, (H, dim).
+        gamma_o: The object block's scaled dual variable, (H, dim).
+        gamma_r: The robot block's scaled dual variable, (H, dim).
+        rho: The current ADMM penalty weight (adapted online).
+        primal_residual: The last ADMM iteration's primal residual, carried
+            across real control steps to seed exploration-noise annealing.
+        rng: PRNG key for the ADMM-level exploration noise.
+    """
+
+    robot_params: Any
+    object_params: Any
+    z: jax.Array
+    gamma_o: jax.Array
+    gamma_r: jax.Array
+    rho: jax.Array
+    primal_residual: jax.Array
+    rng: jax.Array
+
+    @property
+    def tk(self) -> jax.Array:
+        """Knot times, delegated to the robot params (queried externally)."""
+        return self.robot_params.tk
+
+    @property
+    def mean(self) -> jax.Array:
+        """Mean control knots, delegated to the robot params."""
+        return self.robot_params.mean
+
+
+@dataclass
+class _ADMMCarry:
+    """Internal `jax.lax.while_loop` carry for one real control step."""
+
+    it: jax.Array
+    object_params: Any
+    robot_params: Any
+    z: jax.Array
+    gamma_o: jax.Array
+    gamma_r: jax.Array
+    rho: jax.Array
+    primal_res: jax.Array
+    dual_res: jax.Array
+    rng: jax.Array
+
+
+class ADMM(SamplingBasedController):
+    """ADMM-coordinated object/robot consensus planning (Algorithm 4).
+
+    Coordinates an object-level and a robot-level sampling-based
+    sub-optimizer (any `SamplingBasedController`, e.g. `MPPI` or `CBO`) to
+    reach consensus on a task-defined consensus variable (e.g. a contact
+    wrench) every real control step.
+
+    Because the ADMM iteration is fundamentally different from the generic
+    sample/rollout/update template used by every other algorithm (it runs two
+    full sub-optimizations plus consensus math per iteration, with an early
+    exit), `optimize()` is overridden entirely rather than fitting the
+    `sample_knots`/`update_params` template; those two methods are not used
+    and raise `NotImplementedError`.
+    """
+
+    def __init__(
+        self,
+        task: ConsensusTask,
+        robot_optimizer: SamplingBasedController,
+        object_optimizer: SamplingBasedController,
+        consensus: ConsensusSpace,
+        n_admm: int,
+        eps_r: float,
+        eps_s: float,
+        proximal_weight: float = 0.0,
+        rho_init: float = 1.0,
+        noise_min: float = 0.0,
+        noise_kappa: float = 0.0,
+        noise_max: Optional[float] = None,
+    ) -> None:
+        """Build the ADMM controller from two pre-built sub-optimizers.
+
+        Args:
+            task: A task implementing both `Task` and `ConsensusTask`.
+            robot_optimizer: A `SamplingBasedController` built against
+                `task`, used for the robot-level subproblem. Its
+                `plan_horizon`/`num_knots`/`spline_type`/etc. become this
+                controller's own (so `run_interactive` can drive it
+                directly); its `ctrl_steps` must equal
+                `object_optimizer.num_knots` (the consensus horizon H).
+            object_optimizer: A `SamplingBasedController` built against
+                `make_object_shim(task, ...)`, used for the object-level
+                subproblem. Its `num_knots` sets the consensus horizon H.
+            consensus: The consensus space (e.g. `WrenchConsensus`).
+            n_admm: The maximum number of ADMM iterations per real step.
+            eps_r: Primal residual tolerance for early exit.
+            eps_s: Dual residual tolerance for early exit.
+            proximal_weight: Weight (gamma) on the proximal term (eq. 24-25)
+                that anchors each ADMM iteration to the previous one.
+            rho_init: Initial ADMM penalty weight.
+            noise_min: Minimum extra exploration-noise scale.
+            noise_kappa: Scale of extra exploration noise relative to the
+                primal residual (Algorithm 4 step 8, generalized -- see the
+                module docstring for why this differs from the paper).
+            noise_max: Maximum extra exploration-noise scale. Since the
+                residual has no natural upper bound, an uncapped
+                `noise_kappa * residual` can create a runaway feedback loop
+                (more noise -> more disagreement -> larger residual -> more
+                noise). Defaults to `noise_min`, i.e. annealing is inert
+                (a constant noise floor) unless explicitly raised.
+        """
+        if n_admm < 1:
+            raise ValueError("n_admm must be at least 1")
+        if robot_optimizer.ctrl_steps != object_optimizer.num_knots:
+            raise ValueError(
+                "robot_optimizer.ctrl_steps must equal object_optimizer."
+                f"num_knots (the consensus horizon H), got "
+                f"{robot_optimizer.ctrl_steps} != {object_optimizer.num_knots}"
+            )
+
+        self.task = task
+        self.robot_optimizer = robot_optimizer
+        self.object_optimizer = object_optimizer
+        self.consensus = consensus
+        self.n_admm = n_admm
+        self.eps_r = eps_r
+        self.eps_s = eps_s
+        self.rho_init = rho_init
+        self.noise_min = noise_min
+        self.noise_kappa = noise_kappa
+        self.noise_max = noise_min if noise_max is None else noise_max
+
+        self.object_subproblem = ObjectSubproblem(
+            task, object_optimizer, consensus, proximal_weight
+        )
+        self.robot_subproblem = RobotSubproblem(
+            task, robot_optimizer, consensus, proximal_weight
+        )
+
+        # Alias bookkeeping attributes off robot_optimizer, rather than
+        # calling `SamplingBasedController.__init__`, which would rebuild a
+        # redundant (and potentially mismatched) domain-randomization
+        # ensemble. This is what makes `ADMM` a drop-in for `run_interactive`.
+        self.model = robot_optimizer.model
+        self.randomized_axes = robot_optimizer.randomized_axes
+        self.risk_strategy = robot_optimizer.risk_strategy
+        self.num_randomizations = robot_optimizer.num_randomizations
+        self.dt = robot_optimizer.dt
+        self.plan_horizon = robot_optimizer.plan_horizon
+        self.ctrl_steps = robot_optimizer.ctrl_steps
+        self.spline_type = robot_optimizer.spline_type
+        self.num_knots = robot_optimizer.num_knots
+        self.interp_func = robot_optimizer.interp_func
+        self.iterations = robot_optimizer.iterations
+
+    def init_params(
+        self, initial_knots: jax.Array = None, seed: int = 0
+    ) -> ADMMParams:
+        """Initialize the policy parameters."""
+        object_params = self.object_optimizer.init_params(seed=seed)
+        robot_params = self.robot_optimizer.init_params(
+            initial_knots=initial_knots, seed=seed
+        )
+        h = self.object_optimizer.num_knots
+        dim = self.consensus.dim
+        return ADMMParams(
+            robot_params=robot_params,
+            object_params=object_params,
+            z=jnp.zeros((h, dim)),
+            gamma_o=jnp.zeros((h, dim)),
+            gamma_r=jnp.zeros((h, dim)),
+            rho=jnp.asarray(self.rho_init, dtype=jnp.float32),
+            # Large-but-finite sentinel for maximal initial exploration --
+            # must stay finite since it's multiplied into the noise scale
+            # (an actual inf would immediately turn every sampled knot nan).
+            primal_residual=jnp.asarray(100.0, dtype=jnp.float32),
+            rng=jax.random.key(seed),
+        )
+
+    def _shift(self, seq: jax.Array) -> jax.Array:
+        """Receding-horizon shift: seq[t] <- seq[t+1], last slot <- 0."""
+        return jnp.concatenate([seq[1:], jnp.zeros_like(seq[:1])], axis=0)
+
+    def _admm_iteration(
+        self, carry: _ADMMCarry, obj_state0: jax.Array, state: mjx.Data
+    ) -> Tuple[_ADMMCarry, ADMMTrajectory]:
+        """One ADMM iteration: object update -> robot update -> consensus."""
+        rng, obj_rng, rob_rng = jax.random.split(carry.rng, 3)
+        noise_scale = jnp.clip(
+            self.noise_kappa * carry.primal_res, self.noise_min, self.noise_max
+        )
+        prev_object_knots = carry.object_params.mean
+        prev_robot_knots = carry.robot_params.mean
+
+        object_params, w_obj, obj_ref = self.object_subproblem.optimize(
+            obj_state0,
+            carry.object_params,
+            carry.z,
+            carry.gamma_o,
+            carry.rho,
+            prev_object_knots,
+            noise_scale,
+            obj_rng,
+        )
+        robot_params, rollouts = self.robot_subproblem.optimize(
+            state,
+            carry.robot_params,
+            carry.z,
+            carry.gamma_r,
+            carry.rho,
+            obj_ref,
+            prev_robot_knots,
+            noise_scale,
+            rob_rng,
+        )
+        w_rob = self.robot_subproblem.nominal_realized_consensus(
+            state, robot_params
+        )
+
+        z_new = self.consensus.z_update(
+            w_obj, w_rob, carry.gamma_o, carry.gamma_r
+        )
+        gamma_o = self.consensus.dual_update(w_obj, z_new, carry.gamma_o)
+        gamma_r = self.consensus.dual_update(w_rob, z_new, carry.gamma_r)
+
+        # Residuals, in the same normalized units as the penalty so that
+        # eps_r/eps_s are scale-free.
+        #   primal r = [A^o - z ; A^r - z]   (both blocks stacked)
+        #   dual   d = rho * (z^{l+1} - z^{l})
+        primal_res = self.consensus.residual_norm(
+            jnp.concatenate([w_obj - z_new, w_rob - z_new])
+        )
+        dual_res = carry.rho * self.consensus.residual_norm(z_new - carry.z)
+
+        # Algorithm 4 step 7: adaptive penalty.
+        rho = jnp.where(
+            primal_res > 10.0 * dual_res,
+            carry.rho * 2.0,
+            jnp.where(dual_res > 10.0 * primal_res, carry.rho / 2.0, carry.rho),
+        )
+
+        jax.debug.print(
+            "ADMM it={it} primal={p:.4f} dual={d:.4f} rho={r:.3f}",
+            it=carry.it,
+            p=primal_res,
+            d=dual_res,
+            r=rho,
+        )
+
+        new_carry = carry.replace(
+            it=carry.it + 1,
+            object_params=object_params,
+            robot_params=robot_params,
+            z=z_new,
+            gamma_o=gamma_o,
+            gamma_r=gamma_r,
+            rho=rho,
+            primal_res=primal_res,
+            dual_res=dual_res,
+            rng=rng,
+        )
+        return new_carry, rollouts
+
+    def optimize(
+        self, state: mjx.Data, params: ADMMParams
+    ) -> Tuple[ADMMParams, ADMMTrajectory]:
+        """Perform up to `n_admm` ADMM iterations to update the policy."""
+        # Warm-start: shift the object mean and the consensus/dual variables
+        # by one real control step.
+        object_params = params.object_params.replace(
+            mean=self._shift(params.object_params.mean)
+        )
+        z = self._shift(params.z)
+        gamma_o = self._shift(params.gamma_o)
+        gamma_r = self._shift(params.gamma_r)
+
+        # Warm-start the robot mean/knot-times the same way the generic
+        # `SamplingBasedController.optimize()` does, since `run_interactive`
+        # queries `params.tk`/`params.mean` directly via `interp_func`.
+        tk = params.robot_params.tk
+        new_tk = (
+            jnp.linspace(0.0, self.plan_horizon, self.num_knots) + state.time
+        )
+        clamped_tk = jnp.clip(new_tk, tk[0], tk[-1])
+        new_mean = self.robot_optimizer.interp_func(
+            clamped_tk, tk, params.robot_params.mean[None, ...]
+        )[0]
+        robot_params = params.robot_params.replace(tk=new_tk, mean=new_mean)
+
+        obj_state0 = self.task.object_state_from_robot(state)
+        rng, admm_rng = jax.random.split(params.rng)
+
+        init_carry = _ADMMCarry(
+            it=jnp.asarray(0, dtype=jnp.int32),
+            object_params=object_params,
+            robot_params=robot_params,
+            z=z,
+            gamma_o=gamma_o,
+            gamma_r=gamma_r,
+            rho=params.rho,
+            primal_res=params.primal_residual,
+            dual_res=jnp.asarray(jnp.inf, dtype=jnp.float32),
+            rng=admm_rng,
+        )
+
+        # Run one ADMM iteration unconditionally (n_admm >= 1), which also
+        # gives us correctly-shaped rollouts to seed the while_loop carry.
+        carry1, rollouts1 = self._admm_iteration(init_carry, obj_state0, state)
+
+        CarryAndRollouts = Tuple[_ADMMCarry, ADMMTrajectory]
+
+        def _cond(carry_and_rollouts: CarryAndRollouts) -> jax.Array:
+            carry, _ = carry_and_rollouts
+            unconverged = (carry.primal_res > self.eps_r) | (
+                carry.dual_res > self.eps_s
+            )
+            return (carry.it < self.n_admm) & unconverged
+
+        def _body(carry_and_rollouts: CarryAndRollouts) -> CarryAndRollouts:
+            carry, _ = carry_and_rollouts
+            return self._admm_iteration(carry, obj_state0, state)
+
+        final_carry, final_rollouts = jax.lax.while_loop(
+            _cond, _body, (carry1, rollouts1)
+        )
+
+        new_params = ADMMParams(
+            robot_params=final_carry.robot_params,
+            object_params=final_carry.object_params,
+            z=final_carry.z,
+            gamma_o=final_carry.gamma_o,
+            gamma_r=final_carry.gamma_r,
+            rho=final_carry.rho,
+            primal_residual=final_carry.primal_res,
+            rng=final_carry.rng,
+        )
+        return new_params, final_rollouts
+
+    def sample_knots(self, params: ADMMParams) -> Tuple[jax.Array, ADMMParams]:
+        """Not used -- `ADMM.optimize()` overrides the generic template."""
+        raise NotImplementedError(
+            "ADMM overrides optimize() directly; sample_knots/update_params "
+            "are not used. See ADMM.optimize()."
+        )
+
+    def update_params(
+        self, params: ADMMParams, rollouts: ADMMTrajectory
+    ) -> ADMMParams:
+        """Not used -- `ADMM.optimize()` overrides the generic template."""
+        raise NotImplementedError(
+            "ADMM overrides optimize() directly; sample_knots/update_params "
+            "are not used. See ADMM.optimize()."
+        )

@@ -2,9 +2,9 @@ import argparse
 
 import mujoco
 
-from hydrax.algs import CEM, MPPI, PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.cart_pole import CartPole
+from oim.algs import CEM, MPPI, PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.cart_pole import CartPole
 
 """
 Run an interactive simulation of a cart-pole swingup

@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hydrax"
-version = "0.0.2"
-description = "Sampling-based model predictive control on GPU with JAX/MJX"
+name = "oim"
+version = "0.1.0"
+description = "Object-Informed Manipulation: ADMM-coordinated sampling-based MPC for non-prehensile manipulation on GPU with JAX/MJX"
 readme = "README.md"
 license = {text="MIT"}
 requires-python = ">=3.12.0"
@@ -65,7 +65,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
-known-first-party = ["hydrax"]
+known-first-party = ["oim"]
 split-on-trailing-comma = false
 
 [tool.ruff.format]
@@ -82,4 +82,4 @@ testpaths = [
 ]
 
 [tool.setuptools]
-packages = ["hydrax"]
+packages = ["oim"]

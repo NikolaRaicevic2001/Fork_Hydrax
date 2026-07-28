@@ -1,4 +1,4 @@
-name: hydrax
+name: oim
 channels:
   - nvidia/label/cuda-13.0.2
   - conda-forge

@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.algs.mtp import MTP
-from hydrax.tasks.pendulum import Pendulum
+from oim.algs.mtp import MTP
+from oim.tasks.pendulum import Pendulum
 
 
 def test_open_loop() -> None:

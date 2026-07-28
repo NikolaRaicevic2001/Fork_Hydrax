@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from hydrax.utils.spline import get_interp_func
+from oim.utils.spline import get_interp_func
 
 
 def test_zero_interp_func() -> None:

@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 from evosax.algorithms.distribution_based.cma_es import CMA_ES
 from mujoco import mjx
 
-from hydrax.algs.evosax import Evosax
-from hydrax.tasks.pendulum import Pendulum
+from oim.algs.evosax import Evosax
+from oim.tasks.pendulum import Pendulum
 
 
 def test_cmaes() -> None:

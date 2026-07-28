@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import PredictiveSampling
-from hydrax.risk import ConditionalValueAtRisk
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.crane import Crane
+from oim.algs import PredictiveSampling
+from oim.risk import ConditionalValueAtRisk
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.crane import Crane
 
 """
 Run an interactive simulation of crane payload tracking

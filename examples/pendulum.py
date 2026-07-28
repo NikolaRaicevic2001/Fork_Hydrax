@@ -3,9 +3,9 @@ import argparse
 import mujoco
 import numpy as np
 
-from hydrax.algs import CBO, MPPI, MppiCma, PredictiveSampling
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.pendulum import Pendulum
+from oim.algs import CBO, MPPI, MppiCma, PredictiveSampling
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.pendulum import Pendulum
 
 """
 Run an interactive simulation of the pendulum swingup task.

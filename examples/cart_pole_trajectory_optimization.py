@@ -2,9 +2,9 @@ import argparse
 
 from evosax.algorithms.distribution_based import CMA_ES
 
-from hydrax.algs import CEM, MPPI, Evosax, PredictiveSampling
-from hydrax.open_loop import playback, trajectory_optimization
-from hydrax.tasks.cart_pole import CartPole
+from oim.algs import CEM, MPPI, Evosax, PredictiveSampling
+from oim.open_loop import playback, trajectory_optimization
+from oim.tasks.cart_pole import CartPole
 
 """
 Perform open-loop trajectory optimization for the cart-pole swingup task.

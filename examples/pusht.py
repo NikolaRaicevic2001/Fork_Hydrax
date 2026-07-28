@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import (
+from oim.algs import (
     ADMM,
     CBO,
     CEM,
@@ -13,8 +13,8 @@ from hydrax.algs import (
     WrenchConsensus,
     make_object_shim,
 )
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.pusht import PushT
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.pusht import PushT
 
 """
 Run an interactive simulation of the push-T task.
@@ -77,9 +77,9 @@ SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
 # A starting joint configuration (degrees) that puts the xArm6's stick tip
 # near the block's initial position, found via
-# hydrax/models/xarm6_pusht_clutter/verify_reach.py's reach sweep -- not
+# oim/models/xarm6_pusht_clutter/verify_reach.py's reach sweep -- not
 # the arm's own zero-config pose, which (after the base placement in
-# hydrax/tasks/pusht.py's XARM6_BASE_POS/XARM6_BASE_YAW_DEG) isn't
+# oim/tasks/pusht.py's XARM6_BASE_POS/XARM6_BASE_YAW_DEG) isn't
 # anywhere near the block.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
 
@@ -95,7 +95,7 @@ parser.add_argument(
 parser.add_argument(
     "--record",
     action="store_true",
-    help="Record an mp4 of the run to hydrax/recordings/ (needs ffmpeg).",
+    help="Record an mp4 of the run to oim/recordings/ (needs ffmpeg).",
 )
 parser.add_argument(
     "--robot",

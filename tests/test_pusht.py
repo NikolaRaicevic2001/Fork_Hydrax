@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.tasks.pusht import PushT
+from oim.tasks.pusht import PushT
 
 
 @pytest.mark.parametrize("impl", ["jax", "warp"])

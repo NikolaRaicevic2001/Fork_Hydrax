@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.tasks.walker import Walker
+from oim.tasks.walker import Walker
 
 
 @pytest.mark.parametrize("impl", ["jax", "warp"])

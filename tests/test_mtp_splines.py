@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import pytest
 
-from hydrax.utils.spline import (
+from oim.utils.spline import (
     compute_b_spline_matrix,
     interp_akima,
     interp_bspline,

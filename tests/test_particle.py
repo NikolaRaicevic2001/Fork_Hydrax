@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.tasks.particle import Particle
+from oim.tasks.particle import Particle
 
 
 @pytest.mark.parametrize("impl", ["jax", "warp"])

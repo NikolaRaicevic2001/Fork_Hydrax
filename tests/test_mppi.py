@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from mujoco import mjx
 
-from hydrax.algs.mppi import MPPI
-from hydrax.tasks.pendulum import Pendulum
+from oim.algs.mppi import MPPI
+from oim.tasks.pendulum import Pendulum
 
 
 def test_open_loop() -> None:

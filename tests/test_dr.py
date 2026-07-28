@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 from mujoco import mjx
 
-from hydrax.algs import PredictiveSampling
-from hydrax.tasks.particle import Particle
+from oim.algs import PredictiveSampling
+from oim.tasks.particle import Particle
 
 
 def test_domain_randomization() -> None:

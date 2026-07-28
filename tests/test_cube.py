@@ -7,8 +7,8 @@ import mujoco
 import pytest
 from mujoco import mjx
 
-from hydrax import ROOT
-from hydrax.tasks.cube import CubeRotation
+from oim import ROOT
+from oim.tasks.cube import CubeRotation
 
 
 def test_mjx_model() -> None:

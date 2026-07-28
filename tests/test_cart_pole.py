@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 from mujoco import mjx
 
-from hydrax.tasks.cart_pole import CartPole
+from oim.tasks.cart_pole import CartPole
 
 
 @pytest.mark.parametrize("impl", ["jax", "warp"])

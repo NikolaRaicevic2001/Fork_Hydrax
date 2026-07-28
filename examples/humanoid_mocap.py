@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import mujoco
 
-from hydrax.algs import CEM
-from hydrax.risk import AverageCost
-from hydrax.simulation.deterministic import run_interactive
-from hydrax.tasks.humanoid_mocap import HumanoidMocap, HumanoidMocapOptions
+from oim.algs import CEM
+from oim.risk import AverageCost
+from oim.simulation.deterministic import run_interactive
+from oim.tasks.humanoid_mocap import HumanoidMocap, HumanoidMocapOptions
 
 """
 Run an interactive simulation of the humanoid motion capture tracking task.
