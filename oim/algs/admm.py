@@ -350,6 +350,17 @@ class ObjectSubproblem:
                 trace_sites=jnp.zeros((knots.shape[0], 1, 3)),
             )
             params = opt.update_params(params, rollouts)
+            # Re-project the *aggregated* nominal, not just the samples. An
+            # optimizer update is generally a weighted average of samples,
+            # and averaging feasible points need not be feasible: means of
+            # contact points either side of a corner land inside the
+            # object (measured: up to 1.5 mm for the T footprint). Leaving
+            # that unprojected would let an infeasible action anchor the
+            # proximal term, seed the next round's sampling, and carry into
+            # the warm start. No-op for an unconstrained action space.
+            params = params.replace(
+                mean=self.task.project_object_action(params.mean)
+            )
             return params, None
 
         rngs = jax.random.split(rng, opt.iterations)

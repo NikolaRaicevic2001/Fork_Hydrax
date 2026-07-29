@@ -125,7 +125,8 @@ def test_xarm6_requires_clutter() -> None:
 def test_xarm6_task() -> None:
     """Set up the push-T task with the xArm6 embodiment (jax impl only --
     unlike `test_task`, not parametrized over "warp" since this is meant to
-    be runnable without a GPU for a basic sanity check)."""
+    be runnable without a GPU for a basic sanity check).
+    """
     task = PushT(clutter=True, planning_dt=0.05, robot="xarm6")
     assert task.model.nu == 5
 
@@ -149,7 +150,8 @@ def test_xarm6_block_qpos_addresses() -> None:
     """Regression test for the qpos-ordering trap: unlike the point-mass
     scene (block declared before the pusher, so its pose is qpos[:3]), the
     composed xarm6 scene compiles the arm's 5 joints first, so the block's
-    pose must NOT be read from qpos[:3]."""
+    pose must NOT be read from qpos[:3].
+    """
     task = PushT(clutter=True, robot="xarm6")
     assert task.model.nu == 5
     assert list(task.block_qpos_adr) != [0, 1, 2]

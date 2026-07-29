@@ -192,6 +192,52 @@ def test_project_to_boundary_lands_on_boundary() -> None:
     assert jnp.max(jnp.abs(shape.sdf(proj))) < 1e-4
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        t_shape_footprint(),
+        Circle(center=[0.1, 0.2], radius=0.05),
+        Box(center=[0.0, 0.0], half_extents=[0.04, 0.02], angle=0.3),
+        Capsule(a=[-0.05, 0.0], b=[0.05, 0.0], radius=0.01),
+    ],
+)
+def test_projection_reaches_boundary_from_degenerate_interior_points(
+    shape: Shape,
+) -> None:
+    """Projection must land on the surface from *anywhere*, not just outside.
+
+    Regression test for two distinct failures, both of which returned
+    interior points while looking successful:
+
+    * The generic gradient iteration oscillates in a 2-cycle on a polygon's
+      medial axis -- the T footprint's origin mapped to (0, 0.015) and
+      straight back, forever, every iterate 15 mm inside the shape.
+    * A closed-form projection can pick a degenerate fallback direction: a
+      capsule query lying exactly on its spine has no offset to normalize,
+      and stepping along a fixed axis slides *down* the spine, staying
+      inside.
+
+    `project_contact_action` relies on this to guarantee contact points sit
+    on the surface, so an interior result silently corrupts every derived
+    contact wrench.
+    """
+    # Interior seeds, including each shape's own most degenerate point.
+    queries = jnp.array(
+        [
+            [0.0, 0.0],  # T's medial axis / circle centre / capsule spine
+            [0.02, 0.0],
+            [0.1, 0.2],  # circle's exact centre
+            [0.0, 0.015],  # the T's 2-cycle partner
+        ]
+    )
+    proj = shape.project_to_boundary(queries)
+    residual = jnp.max(jnp.abs(shape.sdf(proj)))
+    assert float(residual) < 1e-4, (
+        f"{type(shape).__name__}: projected points are {residual:.2e} off "
+        f"the boundary -- {proj}"
+    )
+
+
 def test_bounding_radius_contains_shape() -> None:
     """Every boundary sample must sit inside the bounding disc."""
     for shape in [t_shape_footprint(), *OBSTACLES]:
@@ -337,7 +383,7 @@ def test_admm_2d_object_actions_stay_feasible_through_the_loop() -> None:
     The whole point of the contact parameterization is that the object
     block cannot converge onto a wrench no point contact could apply.
     """
-    task = _task(obstacles=OBSTACLES)
+    task = _task(obstacles=OBSTACLES, contact_actions=True)
     ctrl, params = build_admm_2d(task, n_admm=4, num_samples=16)
     state = task.make_data(object_pose=(0.0, 0.0, 0.0), robot_pos=(0.0, -0.13))
     new_params, _ = jax.jit(ctrl.optimize)(state, params)
@@ -348,26 +394,40 @@ def test_admm_2d_object_actions_stay_feasible_through_the_loop() -> None:
     assert jnp.all(jnp.abs(f_t) <= task.mu_c * f_n + 1e-4)
 
 
-def test_direct_wrench_object_block_still_works() -> None:
-    """`contact_actions=False` must reproduce the MJX-style object block."""
-    task = _task(contact_actions=False)
-    assert task.object_action_dim == 3
-    assert task.initial_object_action() is None
+def test_contact_action_object_block_still_works() -> None:
+    """The opt-in contact-action parameterization must remain usable."""
+    task = _task(contact_actions=True)
+    assert task.object_action_dim == 4
+    assert task.initial_object_action() is not None
 
     ctrl, params = build_admm_2d(task, n_admm=2, num_samples=16)
     state = task.make_data(object_pose=(0.0, 0.0, 0.0), robot_pos=(0.0, -0.13))
     new_params, rollouts = jax.jit(ctrl.optimize)(state, params)
 
-    assert new_params.object_params.mean.shape == (15, 3)
+    assert new_params.object_params.mean.shape == (15, 4)
     assert jnp.all(jnp.isfinite(rollouts.costs))
 
 
-def test_consensus_dim_is_independent_of_action_dim() -> None:
-    """Z is always the wrench, whichever parameterization the block uses."""
-    assert _task().object_action_dim == 4
-    assert _task().consensus_dim == 3
-    assert _task(contact_actions=False).object_action_dim == 3
-    assert _task(contact_actions=False).consensus_dim == 3
+def test_both_worlds_default_to_the_direct_wrench_object_block() -> None:
+    """2D and 3D must agree on the object parameterization by default.
+
+    The object block's job is to say *what motion it wants*; deciding where
+    on the object to push is the robot block's. Both worlds therefore
+    sample the consensus wrench directly, and the opt-in contact-action
+    parameterization changes only the action space -- `z` stays the wrench
+    either way.
+    """
+    task_2d = _task()
+    assert task_2d.object_action_dim == task_2d.consensus_dim == 3
+    assert task_2d.initial_object_action() is None
+
+    task_3d = PushT(clutter=True, planning_dt=0.05)
+    assert task_3d.object_action_dim == task_3d.consensus_dim == 3
+    assert task_3d.initial_object_action() is None
+
+    opt_in = _task(contact_actions=True)
+    assert opt_in.object_action_dim == 4
+    assert opt_in.consensus_dim == 3
 
 
 def test_closed_loop_makes_progress_toward_the_goal() -> None:

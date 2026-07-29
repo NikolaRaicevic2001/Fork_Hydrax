@@ -57,9 +57,9 @@ cd Object-Informed-Manipulation-MJX
 uv sync
 ```
 
+`uv sync` creates `.venv` and installs everything pinned in `uv.lock`.
 Then either prefix commands with `uv run`, or activate the environment with
-`source .venv/bin/activate`. A conda environment is also provided
-(`conda env create -f environment.yml && pip install -e .`).
+`source .venv/bin/activate`.
 
 Run the tests with `uv run pytest`.
 
@@ -115,15 +115,15 @@ Writes a trajectory + diagnostics plot to
 `oim/recordings/pusht2d_<env>.png` (and a gif with `--animate`).
 
 ```bash
-# T-block through the same clutter, contact-action object block
+# T-block through the same clutter
 uv run python examples/pusht2d.py
 
 # push *through* a tight opening rather than around obstacles
 uv run python examples/pusht2d.py --env corridor
 uv run python examples/pusht2d.py --env gate
 
-# A/B the object parameterization against the one the 3D tasks use
-uv run python examples/pusht2d.py --direct-wrench
+# A/B against the contact-action object parameterization
+uv run python examples/pusht2d.py --contact-action
 
 # no jit anywhere -- breakpoint inside the physics or the ADMM math
 uv run python examples/pusht2d.py --no-jit --steps 3
@@ -426,8 +426,17 @@ obstacle requires.
 
 Tasks opt in via `object_action_dim`, `object_action_to_consensus`,
 `project_object_action`, `sample_object_actions` and
-`initial_object_action` on [`ConsensusTask`](oim/task_base.py). Currently
-`PushT2D` uses it and the MJX `PushT` does not.
+`initial_object_action` on [`ConsensusTask`](oim/task_base.py).
+
+**Neither task uses it by default.** Both `PushT` and `PushT2D` sample the
+wrench directly, on the view that *where* the robot touches the object is
+the robot block's concern — the object planner only needs to say what
+motion it wants, and making it also choose a contact point duplicates the
+robot block's job inside the wrong subproblem. The contact-action path
+remains available (`PushT2D(contact_actions=True)`, or
+`examples/pusht2d.py --contact-action`) so the two can be compared, since
+the constraint it buys — every proposal inside the friction cone — is
+real.
 
 ### Implementation notes
 
@@ -483,7 +492,6 @@ Where they currently differ — deliberately, and **not yet reconciled**:
 | | 3D (`PushT`, MJX) | 2D (`PushT2D`, analytic) |
 | --- | --- | --- |
 | Robot rollout | `MJXRollout` — `mjx.step` | `Analytic2DRollout` — `resolve_contact` |
-| Object decision $A^o$ | wrench $w$ sampled directly, unbounded | contact action $[p, f_n, f_t]$, cone-projected |
 | Realized $A^r$ | `"twist"`: $w = D^{-1}\dot{x}^o$ (default), or `"contact"`: $-\,q^{\text{frc}}_{\text{constraint}}$ (point pusher only) | contact solver's own $J_c^\top f$ |
 | $\ell_r$ terms | approach + align + tilt + tip-height | approach + robot obstacle clearance |
 | Robot obstacle avoidance | emergent, via MJX contact | explicit hinge cost in $\ell_r$ |

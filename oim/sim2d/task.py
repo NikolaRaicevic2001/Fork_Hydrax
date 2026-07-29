@@ -6,12 +6,14 @@ and reuses `oim.objects.PlanarPushingObject` for the object block verbatim
 -- so the object-level subproblem is *literally the same code* in 2D and in
 MJX, and only the robot block's physics differs.
 
-It also switches the object block onto the contact-action parameterization
-(`[p_x, p_y, f_n, f_t]`, wrench derived as `w = J_c^T f`), which the MJX
-tasks leave off by default. That is the setting this layer exists to test:
-every proposed wrench is realizable by a point contact inside the friction
-cone, so the consensus cannot converge onto a wrench the robot could never
-produce.
+The object block samples the consensus wrench directly, matching the MJX
+tasks: *where* the robot touches the object is the robot block's business,
+and the object planner only needs to say what motion it wants. Setting
+`contact_actions=True` switches it to deciding a contact action
+`[p_x, p_y, f_n, f_t]` and deriving the wrench as `w = J_c^T f` instead,
+which constrains every proposal to the friction cone but also makes the
+object block choose a contact point it has no reason to care about. Both
+are available so the two can be compared.
 """
 
 from typing import Optional, Sequence, Tuple
@@ -60,7 +62,7 @@ class PushT2D(ConsensusTask):
         robot_radius: float = 0.012,
         robot_max_speed: float = 0.6,
         n_substeps: int = 4,
-        contact_actions: bool = True,
+        contact_actions: bool = False,
         sigma_p: float = 0.012,
         sigma_fn: float = 0.7,
         sigma_ft: float = 0.3,
@@ -98,8 +100,12 @@ class PushT2D(ConsensusTask):
                 times this value.
             n_substeps: Contact substeps per timestep.
             contact_actions: Whether the object block decides a contact
-                action (default) or the wrench directly, as the MJX tasks
-                do. Set False to A/B the two parameterizations.
+                action `[p, f_n, f_t]` and derives the wrench from it, or
+                (default) samples the wrench directly as the MJX tasks do.
+                Direct wrench is the default because *where* the robot
+                touches the object is the robot block's concern, not the
+                object planner's -- the object block only needs to say what
+                motion it wants. Set True to A/B the two.
             sigma_p: Contact-point sampling std-dev.
             sigma_fn: Normal-force sampling std-dev.
             sigma_ft: Tangential-force sampling std-dev.

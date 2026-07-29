@@ -204,15 +204,35 @@ Delete rows as they are decided.
 
 | # | Item | 3D (`PushT`) | 2D (`PushT2D`) | Note |
 | --- | --- | --- | --- | --- |
-| 2.1 | Object decision $A^o$ | wrench sampled directly, unbounded | contact action $[p, f_n, f_t]$, cone-projected | 2D is strictly more physical; 3D can propose unrealizable wrenches |
+| ~~2.1~~ | ~~Object decision $A^o$~~ | — | — | **Resolved:** both now sample the wrench directly. The contact point is the robot block's concern; the object block only specifies the motion it wants. Contact-action remains opt-in for comparison. See 2.6 for the one property this gave up. |
 | 2.2 | $\epsilon_r,\ \epsilon_s$ | 0.05 | 0.5 | 0.05 is *provably* unreachable at $H=15$ (Frobenius norm over 90 entries); 3D should change regardless of anything else here |
 | 2.3 | Variance annealing | on, residual-driven | off | see 1.4 |
 | 2.4 | Contact relocation | none | CEM search over the boundary each step | only meaningful if 2.1 is unified |
 | 2.5 | $A^r$ estimator | `"twist"` (default) or `"contact"` | contact solver's own $J_c^\top f$ | mechanisms must differ; the *quantity* must not |
+| 2.6 | Bound on $A^o$ | none (`±inf`) | none (`±inf`) | consistent, but *both* unbounded since 2.1 was resolved — see below |
 
 Item 2.2 is independent of everything else and is a straightforward fix.
-Items 2.1 and 2.4 are one decision: contact relocation presupposes the
-contact-action parameterization.
+Item 2.4 is moot while 2.1 stands resolved as direct-wrench: contact
+relocation only exists inside the contact-action parameterization.
+
+**On 2.6.** Resolving 2.1 in favour of the direct wrench dropped the
+friction-cone constraint that the contact-action path enforced
+structurally. That constraint had two separable parts, and only one of them
+was really about the contact point:
+
+* *where* the force acts — genuinely the robot's business, correctly
+  discarded;
+* *how large* the wrench may be — a property of the object and its support
+  surface, and still true regardless of who applies it.
+
+`object_action_bounds()` currently returns $\pm\infty$, and
+`action_scale = 0.5\,D^{-1}$, so a sampled knot of 10 asks for five times
+the largest wrench the table can transmit. That does not fail silently —
+$A^r$ cannot match it, the residual stays high and $\rho$ climbs — but the
+iterations are spent chasing a target that is unreachable by construction.
+Bounding the direct wrench at $\pm D^{-1}$ (i.e. `consensus_scale()`, which
+this repo already computes) restores the useful half of the constraint
+without reintroducing the contact point.
 
 ---
 

@@ -12,6 +12,10 @@ from typing import Sequence, Tuple
 import jax
 import jax.numpy as jnp
 
+# Arbitrary direction used where a projection is genuinely ambiguous (a
+# query exactly at a disc's centre: every boundary point is equidistant).
+_UNIT_X = jnp.array([1.0, 0.0])
+
 
 def rotate(theta: jax.Array, v: jax.Array) -> jax.Array:
     """Rotate 2D vector(s) `v` of shape (..., 2) by angle(s) `theta`."""
@@ -101,18 +105,16 @@ class Shape(ABC):
     ) -> jax.Array:
         """Project points onto the shape boundary.
 
-        Iterates the first-order step Pi(p) = p - d(p) grad d(p). One step
-        is exact only when the gradient already points at the nearest
-        boundary point; for a query further inside a non-convex footprint it
-        undershoots, so the step is repeated a fixed (jit-friendly) number
-        of times.
+        Generic fallback for shapes with no closed form: iterate the
+        first-order step Pi(p) = p - d(p) grad d(p).
 
-        Caveat: a point sitting *on* the medial axis cannot be projected by
-        this family of methods at all -- the gradient there is degenerate
-        (two equidistant faces cancel), so the iteration stalls. The T
-        footprint's own origin is such a point. Callers that need a
-        guaranteed-boundary result from an arbitrary interior seed should
-        start from `sample_boundary` instead of relying on projection.
+        **Every shape in this module overrides it**, because the iteration
+        is not merely approximate -- near the medial axis it can fail
+        outright, oscillating in a 2-cycle between two interior points and
+        never reaching the surface at all. Callers rely on this to
+        *guarantee* that a contact point lies on the boundary, so a new
+        `Shape` that cannot give an exact projection should be used with
+        that limitation in mind.
 
         Args:
             points: Query points of shape (..., 2).
@@ -150,6 +152,23 @@ class Circle(Shape):
         """Signed distance to the disc."""
         return jnp.linalg.norm(points - self._center, axis=-1) - self.radius
 
+    def project_to_boundary(
+        self, points: jax.Array, iterations: int = 3
+    ) -> jax.Array:
+        """Exact radial projection; `iterations` is ignored.
+
+        Also well defined at the disc's own centre -- the degenerate case
+        for the base class's gradient step -- where it picks the +x point
+        arbitrarily, every boundary point being equidistant.
+        """
+        del iterations
+        rel = jnp.asarray(points, dtype=float) - self._center
+        norm = jnp.linalg.norm(rel, axis=-1, keepdims=True)
+        direction = jnp.where(
+            norm > 1e-12, rel / jnp.where(norm > 1e-12, norm, 1.0), _UNIT_X
+        )
+        return self._center + self.radius * direction
+
     @property
     def center(self) -> jax.Array:
         """The disc's center."""
@@ -182,6 +201,37 @@ class Box(Shape):
         outside = jnp.linalg.norm(jnp.clip(q, 0.0, None), axis=-1)
         inside = jnp.clip(jnp.max(q, axis=-1), None, 0.0)
         return outside + inside
+
+    def project_to_boundary(
+        self, points: jax.Array, iterations: int = 3
+    ) -> jax.Array:
+        """Exact projection onto the rectangle; `iterations` is ignored.
+
+        Outside the box, clamping to the extents already lands on the
+        surface. Inside, that clamp is a no-op, so the nearest face is
+        chosen explicitly -- the axis with the least remaining room -- and
+        that coordinate snapped to the edge.
+        """
+        del iterations
+        pts = jnp.asarray(points, dtype=float)
+        local = rotate(-self.angle, pts - self._center)
+        he = self.half_extents
+
+        inside = jnp.all(jnp.abs(local) <= he, axis=-1, keepdims=True)
+        clamped = jnp.clip(local, -he, he)
+
+        # Nearest face for interior queries: least slack along either axis.
+        slack = he - jnp.abs(local)
+        axis = jnp.argmin(slack, axis=-1)
+        onehot = jax.nn.one_hot(axis, 2, dtype=local.dtype)
+        snapped = jnp.where(onehot > 0, jnp.sign(local) * he, local)
+        # sign(0) is 0, which would collapse the point onto the centreline;
+        # a query exactly on an axis is equidistant from both faces, so
+        # pick the positive one.
+        snapped = jnp.where((onehot > 0) & (local == 0.0), he, snapped)
+
+        local_proj = jnp.where(inside, snapped, clamped)
+        return self._center + rotate(self.angle, local_proj)
 
     @property
     def center(self) -> jax.Array:
@@ -218,6 +268,31 @@ class Capsule(Shape):
         h = jnp.clip(jnp.sum(pa * ba, axis=-1) / jnp.sum(ba * ba), 0.0, 1.0)
         closest = self.a + h[..., None] * ba
         return jnp.linalg.norm(points - closest, axis=-1) - self.radius
+
+    def project_to_boundary(
+        self, points: jax.Array, iterations: int = 3
+    ) -> jax.Array:
+        """Exact projection onto the stadium; `iterations` is ignored.
+
+        Closest point on the spine, then out by `radius`.
+        """
+        del iterations
+        pts = jnp.asarray(points, dtype=float)
+        pa = pts - self.a
+        ba = self.b - self.a
+        h = jnp.clip(jnp.sum(pa * ba, axis=-1) / jnp.sum(ba * ba), 0.0, 1.0)
+        spine = self.a + h[..., None] * ba
+        rel = pts - spine
+        norm = jnp.linalg.norm(rel, axis=-1, keepdims=True)
+        # A query lying *on* the spine has no offset direction to normalize.
+        # Step perpendicular to the segment, not along a fixed axis: moving
+        # along +x would slide down the spine and stay inside the stadium.
+        perp = jnp.array([-ba[1], ba[0]])
+        perp = perp / jnp.linalg.norm(perp)
+        direction = jnp.where(
+            norm > 1e-12, rel / jnp.where(norm > 1e-12, norm, 1.0), perp
+        )
+        return spine + self.radius * direction
 
     @property
     def center(self) -> jax.Array:
@@ -277,6 +352,64 @@ class Polygon(Shape):
         """Distance from the centroid to the farthest vertex."""
         c = jnp.mean(self.vertices, axis=0)
         return float(jnp.max(jnp.linalg.norm(self.vertices - c, axis=-1)))
+
+    def closest_boundary_point(self, points: jax.Array) -> jax.Array:
+        """The exact nearest point on the polygon's boundary.
+
+        Args:
+            points: Query points of shape (..., 2).
+
+        Returns:
+            Boundary points of the same shape.
+        """
+        pts = jnp.asarray(points, dtype=float)
+        single = pts.ndim == 1
+        flat = pts.reshape(-1, 2)
+
+        a = self.vertices
+        b = jnp.roll(self.vertices, -1, axis=0)
+        ab = b - a
+        # Closest point on each edge segment, for every query point.
+        rel = flat[:, None, :] - a[None, :, :]
+        t = jnp.clip(
+            jnp.sum(rel * ab[None], axis=-1) / jnp.sum(ab * ab, axis=-1),
+            0.0,
+            1.0,
+        )
+        closest = a[None] + t[..., None] * ab[None]  # (N, n_edges, 2)
+        d2 = jnp.sum((flat[:, None, :] - closest) ** 2, axis=-1)
+        best = closest[jnp.arange(flat.shape[0]), jnp.argmin(d2, axis=-1)]
+        return best[0] if single else best.reshape(pts.shape)
+
+    def project_to_boundary(
+        self, points: jax.Array, iterations: int = 3
+    ) -> jax.Array:
+        """Exact projection onto the boundary; `iterations` is ignored.
+
+        Overrides the base class's iterative gradient step, which does not
+        merely converge slowly for a polygon -- it can fail outright. On the
+        medial axis the step oscillates in a 2-cycle: the T footprint's
+        origin maps to (0, 0.015), whose own gradient points straight back,
+        so the iteration alternates forever and every iterate is 15 mm
+        inside the shape. Since `project_contact_action` relies on this to
+        *guarantee* a contact point lies on the surface, an approximation
+        that silently returns interior points is not good enough.
+
+        The exact answer is already available: `sdf` computes the closest
+        point on every edge in order to take their minimum, so keeping that
+        argmin costs nothing and is correct everywhere, including on the
+        medial axis (where it simply picks one of the equidistant nearest
+        points -- any of them is a valid projection).
+
+        Args:
+            points: Query points of shape (..., 2).
+            iterations: Unused; accepted for signature compatibility.
+
+        Returns:
+            Boundary points of the same shape.
+        """
+        del iterations
+        return self.closest_boundary_point(points)
 
     def sample_boundary(self, n_per_edge: int = 4) -> jax.Array:
         """Evenly sample points along the polygon boundary.

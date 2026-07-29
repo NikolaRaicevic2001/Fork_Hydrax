@@ -1,8 +1,0 @@
-name: oim
-channels:
-  - nvidia/label/cuda-13.0.2
-  - conda-forge
-dependencies:
-  - cuda
-  - cudnn
-  - python=3.12

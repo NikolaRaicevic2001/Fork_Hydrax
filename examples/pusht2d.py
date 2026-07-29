@@ -13,8 +13,8 @@ the formulation rather than MJX.
     uv run python examples/pusht2d.py --env corridor
     uv run python examples/pusht2d.py --env gate
 
-    # A/B the object parameterization against the one the 3D tasks use
-    uv run python examples/pusht2d.py --direct-wrench
+    # A/B against the contact-action object parameterization
+    uv run python examples/pusht2d.py --contact-action
 
     # step through the physics in a debugger (no jit anywhere)
     uv run python examples/pusht2d.py --no-jit --steps 3
@@ -214,10 +214,11 @@ def main() -> None:
     p.add_argument("--gamma", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
-        "--direct-wrench",
+        "--contact-action",
         action="store_true",
-        help="Have the object block sample the wrench directly, as the MJX "
-        "tasks do, instead of a contact action. Use to A/B the two.",
+        help="Have the object block decide a contact action [p, f_n, f_t] "
+        "and derive the wrench from it, instead of sampling the wrench "
+        "directly. Use to A/B the two parameterizations.",
     )
     p.add_argument(
         "--no-relocate",
@@ -245,7 +246,7 @@ def main() -> None:
         footprint=scenario.footprint,
         goal=scenario.goal,
         obstacles=None if args.no_obstacles else scenario.obstacles,
-        contact_actions=not args.direct_wrench,
+        contact_actions=args.contact_action,
         relocate_contact=not args.no_relocate,
     )
     ctrl, params = build_admm_2d(
@@ -258,9 +259,9 @@ def main() -> None:
         seed=args.seed,
     )
     block_kind = (
-        "direct wrench"
-        if args.direct_wrench
-        else "contact action [p, f_n, f_t]"
+        "contact action [p, f_n, f_t]"
+        if args.contact_action
+        else "direct wrench"
     )
     print(
         f"object block: {block_kind}  "
