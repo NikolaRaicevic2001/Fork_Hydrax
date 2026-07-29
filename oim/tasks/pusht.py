@@ -30,14 +30,9 @@ CLUTTER_OBSTACLES = ObstacleField(
     ]
 )
 
-# xArm6 base placement (x, y, yaw about z), ground-mounted (z is not a free
-# parameter -- the base sits directly on the floor, matching a real
-# floor/table-mounted arm). Chosen by sweeping candidate offsets and joint
-# configurations in models/xarm6_pusht_clutter/verify_reach.py and picking
-# the one with the best worst-case reach across the block/goal/obstacle
-# footprint (verified: every point in the workspace is reachable within a
-# few cm, with the stick tip's own excluded self-collisions -- see
-# models/xarm6/xarm6.xml -- otherwise unaffected by this placement).
+# xArm6 base placement (x, y, yaw about z), ground-mounted. Chosen via the
+# reach sweep in models/xarm6_pusht_clutter/verify_reach.py; covers the
+# block/goal/obstacle footprint within a few cm.
 XARM6_BASE_POS = (0.2, 0.75)
 XARM6_BASE_YAW_DEG = -90.0
 
@@ -203,22 +198,12 @@ class PushT(Task, ConsensusTask):
             self.r_r = 0.05
             self.w_ee, self.r0 = 20.0, 0.05
             self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
-            # w_tilt/w_tip_z are not given numeric values in the paper --
-            # untuned, same order of magnitude as w_align/w_ee since all are
-            # soft shaping terms on the end-effector pose.
+            # w_tilt/w_tip_z: not in the paper, untuned, same order of
+            # magnitude as w_align/w_ee.
             self.w_tilt = 5.0
             self.w_tip_z = 50.0
-            # Target tip height for good side contact: the block's own
-            # (fixed) z -- it only translates in x/y and rotates about z,
-            # so its z never changes during simulation, this is read once
-            # here rather than hardcoded. Not `block thickness / 2` from a
-            # z=0 floor as a first-principles calculation would give
-            # (0.02 m, from the block geoms' z half-extent) -- this MJCF's
-            # block actually rests slightly above that (z=0.03, a ~1cm
-            # floor clearance already baked into pusht_clutter.xml, present
-            # before any of this session's changes), so the block's own
-            # position is the physically-correct target, not the idealized
-            # formula.
+            # Target tip height: the block's own resting z, read from the
+            # model rather than hardcoded.
             self.tip_target_z = float(mj_model.body("block").pos[2])
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
@@ -251,13 +236,10 @@ class PushT(Task, ConsensusTask):
     def running_cost(self, state: mjx.Data, control: jax.Array) -> jax.Array:
         """The running cost ℓ(xₜ, uₜ) for plain (non-ADMM) MPC.
 
-        For `robot="xarm6"`, this reuses the same approach/align/tilt
-        shaping terms as the ADMM robot-level cost (`_ell_r`), with the
-        fixed `self.goal` standing in for the object planner's reference
-        (there is no separate object-level plan in plain MPC) -- otherwise
-        the psi_tilt fix in `_ell_r` would have no visible effect here,
-        since plain MPC never calls `robot_running_cost`. `robot="point"`
-        keeps the original sensor-based formula untouched.
+        `robot="xarm6"` reuses `_ell_r`'s approach/align/tilt shaping with
+        `self.goal` standing in for the object planner's reference (plain
+        MPC has no object-level plan). `robot="point"` uses the original
+        sensor-based formula.
         """
         if self.robot == "xarm6":
             pose = self._block_pose(state)
@@ -347,44 +329,24 @@ class PushT(Task, ConsensusTask):
         return self._block_pose(state)
 
     def _consensus_from_twist(self, state: mjx.Data) -> jax.Array:
-        """A^r read through the limit-surface relation: w = D^-1 * xdot^o.
+        """A^r via the limit-surface relation `xdot^o = D w^o` (paper eq. 4).
 
-        The paper's own eq. (4) states that under quasi-static pushing the
-        applied contact wrench and the resulting object twist are in
-        bijection, `xdot^o = D w^o`. Inverting it recovers *the wrench that
-        produced the object motion the robot actually achieved* -- the same
-        physical quantity as the contact force, in the same units, but read
-        through the object model instead of the contact solver.
-
-        This is the default because it is strictly better behaved for ADMM:
-
-        * **Backend-agnostic.** Needs only `qvel`, which both the JAX and
-          the MjWarp `Data` expose. The contact-array route does not: MjWarp
-          flattens `data.contact.*` into `data._impl.contact__*`, so any
-          code touching those structs is jax-only.
-        * **Robot-agnostic.** Identical for the point pusher and the xArm6 --
-          no contact enumeration, no Jacobian transpose.
-        * **Continuous.** Contact forces are exactly zero whenever contact
-          breaks, which during a normal push is most timesteps (measured:
-          7/10 samples exactly zero, spiking to ~16 N in between). The
-          residual then tracks contact chatter rather than genuine
-          object/robot disagreement. The twist signal ramps smoothly instead.
-        * **Cheaper.** No per-contact `vmap` inside the rollout scan.
+        Inverted to recover the wrench that produced the observed twist.
+        Default estimator: backend-agnostic (needs only `qvel`), robot-
+        agnostic (no contact enumeration), and continuous (contact forces
+        are exactly zero between contacts, so `_consensus_from_contact`
+        gives a chattery signal; this doesn't).
         """
         return self.object_model.wrench_limit * state.qvel[self.block_dofs]
 
     def _consensus_from_contact(self, state: mjx.Data) -> jax.Array:
-        """A^r read literally from the simulator's constraint forces.
+        """A^r read literally from the simulator's constraint force.
 
-        `qfrc_constraint` at the pusher's DOFs is the constraint force acting
-        *on the pusher*; by Newton's third law its negation is the force the
-        pusher applies to the object. Verified to match `mj_contactForce`
-        exactly, and available on both backends.
-
-        Point pusher only: this relies on the pusher's DOFs being exactly the
-        two translational DOFs in contact with the block, which holds for the
-        free point mass but not for an articulated arm (there the same
-        constraint force appears as `J^T f` spread across all joints).
+        `qfrc_constraint` at the pusher's DOFs is the force acting on the
+        pusher; its negation is the force applied to the object (Newton's
+        third law). Point pusher only: relies on the pusher's DOFs being
+        exactly the two translational DOFs in contact with the block, which
+        doesn't hold for an articulated arm.
         """
         f = -state.qfrc_constraint[self.pusher_dofs]
         r = self._pusher_pos(state) - self._block_pose(state)[:2]
@@ -408,11 +370,8 @@ class PushT(Task, ConsensusTask):
     def _tilt(self, state: mjx.Data) -> jax.Array:
         """psi_tilt(R_ee): end-effector tilt from vertical (paper eq. 22).
 
-        Squared-sum of the roll/pitch angles extracted from the end-effector
-        site's world-frame rotation matrix. Correctly zero for `robot=
-        "point"`: its `pusher` site has no orientation DOF at all, so its
-        rotation matrix is always identity (roll=pitch=0) -- no branch on
-        `self.robot` is needed for that reason.
+        From the roll/pitch of the end-effector site's rotation matrix.
+        Identically zero for `robot="point"` (no orientation DOF).
         """
         r_mat = state.site_xmat[self.trace_site_ids[0]]
         roll = jnp.arctan2(r_mat[2, 1], r_mat[2, 2])
@@ -422,13 +381,10 @@ class PushT(Task, ConsensusTask):
         return jnp.sqrt(roll**2 + pitch**2)
 
     def _tip_height_err(self, state: mjx.Data) -> jax.Array:
-        """(z_tip - tip_target_z)^2: not in the paper -- an added term to
-        keep the pusher near the block's own mid-height for good side
-        contact, since nothing else in this cost constrains the tip's
-        height at all (approach/align only ever look at xy). Correctly a
-        no-op for `robot="point"`: its `pusher` site sits at the same fixed
-        z as the block by construction, so this is identically zero -- no
-        branch on `self.robot` needed.
+        """(z_tip - tip_target_z)^2: not in the paper.
+
+        Keeps the pusher at the block's height for side contact.
+        Identically zero for `robot="point"`.
         """
         z_tip = state.site_xpos[self.trace_site_ids[0], 2]
         return (z_tip - self.tip_target_z) ** 2
@@ -440,8 +396,10 @@ class PushT(Task, ConsensusTask):
         pusher_pos: jax.Array,
         obj_ref: jax.Array,
     ) -> jax.Array:
-        """Robot stage cost ℓ_r: approach + align + tilt (paper eq. 20-22)
-        + tip height (not in the paper, see `_tip_height_err`).
+        """Robot stage cost ℓ_r (paper eq. 20-22).
+
+        approach + align + tilt + tip height (the last not in the paper,
+        see `_tip_height_err`).
         """
         d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)

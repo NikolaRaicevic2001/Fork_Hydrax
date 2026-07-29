@@ -214,18 +214,11 @@ class ConsensusTask(ABC):
         """
         return jnp.ones(self.object_action_dim)
 
-    # ------------------------------------------------------------------
-    # Object action parameterization (optional).
-    #
-    # By default the object block's decision variable *is* the consensus
-    # variable: it samples w^o_t directly and `object_action_to_consensus`
-    # is a rescaling. Overriding these four hooks lets a task decide
-    # something richer instead -- e.g. `oim.sim2d` decides a contact action
-    # [p_x, p_y, f_n, f_t] and derives the wrench through w = J_c^T f, so
-    # every proposal is inside the friction cone by construction. The
-    # consensus variable, and hence everything ADMM does with it, is
-    # unchanged either way.
-    # ------------------------------------------------------------------
+    # Object action parameterization (optional). By default the object
+    # block samples w^o_t directly. Overriding these four hooks lets a
+    # task decide something richer instead -- e.g. `oim.sim2d`'s contact
+    # action [p_x, p_y, f_n, f_t], mapped to a wrench via w = J_c^T f so
+    # every proposal is inside the friction cone by construction.
 
     @property
     def object_action_dim(self) -> int:

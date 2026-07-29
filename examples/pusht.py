@@ -204,17 +204,11 @@ if args.algorithm == "admm":
         record_video=args.record,
     )
 else:
-    # Define the task (cost and dynamics). Plain (non-ADMM) MPC against the
-    # basic reach-and-touch running_cost -- for robot="xarm6" this is the
-    # first validation step before any ADMM-specific wiring is trusted (see
-    # XARM6_ADMM_INTEGRATION_PLAN.md's "Validation staging" section):
-    # xarm6 still needs clutter=True (there's no non-cluttered xarm6 scene),
-    # but nothing ADMM-related is constructed here.
-    # For xarm6, coarsen the planner's own internal timestep (the composed
-    # scene's baked-in 0.01s otherwise gives 50 substeps per 0.5s rollout;
-    # 0.05s gives 10 -- confirmed ~5x fewer substeps directly, the single
-    # biggest speed lever after mesh simplification, see xarm6.xml). Only
-    # the *planning* model changes; execution below still steps at 0.001s.
+    # Plain (non-ADMM) MPC against the basic reach-and-touch running_cost.
+    # xarm6 still needs clutter=True (no non-cluttered xarm6 scene exists).
+    # planning_dt coarsens the planner's own timestep for xarm6 (10 substeps
+    # per rollout instead of 50); only the planning model changes, execution
+    # below still steps at 0.001s.
     planning_dt = 0.05 if args.robot == "xarm6" else None
     task = PushT(
         impl=impl,
@@ -223,12 +217,9 @@ else:
         planning_dt=planning_dt,
     )
 
-    # xArm6's per-rollout cost is much higher than the point mass's (7 mesh
-    # bodies' worth of convex-convex collision checking vs. 2 spheres/boxes),
-    # vmapped over num_samples*num_randomizations rollouts -- the point
-    # mass's defaults (128 samples * 4 randomizations = 512 parallel
-    # rollouts) were confirmed to exhaust an 11 GB GPU for the arm. Not
-    # tuned for quality, just small enough to actually run.
+    # xArm6's per-rollout collision cost is much higher than the point
+    # mass's; the point mass's defaults (128 samples * 4 randomizations)
+    # exhaust an 11 GB GPU for the arm.
     num_samples = 16 if args.robot == "xarm6" else 128
     num_randomizations = 1 if args.robot == "xarm6" else 4
 

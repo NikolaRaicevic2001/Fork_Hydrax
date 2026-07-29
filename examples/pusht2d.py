@@ -43,6 +43,14 @@ from oim.sim2d import (
     run_2d,
 )
 
+# XLA's GPU command buffers (CUDA graphs) leak across ~200 iterations of
+# this closed loop and hit RESOURCE_EXHAUSTED; disabling them is XLA's own
+# suggested fix. Scoped to this script, not `oim/__init__.py`: doing it
+# globally breaks the Warp backend elsewhere.
+os.environ["XLA_FLAGS"] = (
+    os.environ.get("XLA_FLAGS", "") + " --xla_gpu_enable_command_buffer="
+)
+
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
     """A closed polyline tracing an obstacle, for filling in matplotlib."""
