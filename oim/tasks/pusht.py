@@ -441,7 +441,8 @@ class PushT(Task, ConsensusTask):
         obj_ref: jax.Array,
     ) -> jax.Array:
         """Robot stage cost ℓ_r: approach + align + tilt (paper eq. 20-22)
-        + tip height (not in the paper, see `_tip_height_err`)."""
+        + tip height (not in the paper, see `_tip_height_err`).
+        """
         d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
 

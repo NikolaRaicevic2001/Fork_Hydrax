@@ -13,7 +13,7 @@ from evosax.algorithms.distribution_based import (
 
 from oim.algs import CEM, DIAL, MPPI, Evosax, PredictiveSampling
 from oim.risk import WorstCase
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.particle import Particle
 
 """

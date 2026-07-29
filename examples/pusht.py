@@ -13,7 +13,7 @@ from oim.algs import (
     WrenchConsensus,
     make_object_shim,
 )
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.pusht import PushT
 
 """

@@ -4,7 +4,7 @@ import mujoco
 import numpy as np
 
 from oim.algs import CBO, MPPI, MppiCma, PredictiveSampling
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.pendulum import Pendulum
 
 """

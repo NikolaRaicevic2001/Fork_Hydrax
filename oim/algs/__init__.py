@@ -1,4 +1,11 @@
-from .admm import ADMM, ConsensusSpace, WrenchConsensus, make_object_shim
+from .admm import (
+    ADMM,
+    ConsensusSpace,
+    MJXRollout,
+    RobotRollout,
+    WrenchConsensus,
+    make_object_shim,
+)
 from .cbo import CBO
 from .cem import CEM
 from .dial import DIAL
@@ -13,12 +20,14 @@ __all__ = [
     "CBO",
     "CEM",
     "ConsensusSpace",
+    "MJXRollout",
     "MPPI",
     "MTP",
     "PredictiveSampling",
     "Evosax",
     "DIAL",
     "MppiCma",
+    "RobotRollout",
     "WrenchConsensus",
     "make_object_shim",
 ]

@@ -4,8 +4,8 @@ from copy import deepcopy
 import mujoco
 
 from oim.algs import MppiCma
-from oim.simulation.asynchronous import run_interactive as run_async
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.asynchronous import run_interactive as run_async
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.humanoid_standup import HumanoidStandup
 
 """

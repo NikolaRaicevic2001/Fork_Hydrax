@@ -61,7 +61,8 @@ def tip_pose(m: mujoco.MjModel, d: mujoco.MjData, q1, q2, q3, q4, q5):
     """Set the 5 arm joints (block/obstacles left at their defaults) and
     return the stick tip's world position and its local z-axis tilt from
     vertical (0 = perfectly straight down/up, matching "stick points along
-    world z" -- sign doesn't matter, only magnitude)."""
+    world z" -- sign doesn't matter, only magnitude).
+    """
     d.qpos[:5] = [q1, q2, q3, q4, q5]
     mujoco.mj_forward(m, d)
     tip_id = m.site("xarm6_tip").id

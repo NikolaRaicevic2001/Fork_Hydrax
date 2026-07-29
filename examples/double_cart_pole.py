@@ -3,7 +3,7 @@ import argparse
 import mujoco
 
 from oim.algs import PredictiveSampling
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.double_cart_pole import DoubleCartPole
 
 """

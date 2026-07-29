@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -212,7 +212,113 @@ class ConsensusTask(ABC):
         w^o_t. Defaults to no scaling; override when the sampler's natural
         units differ substantially across dimensions (e.g. force vs torque).
         """
-        return jnp.ones(self.consensus_dim)
+        return jnp.ones(self.object_action_dim)
+
+    # ------------------------------------------------------------------
+    # Object action parameterization (optional).
+    #
+    # By default the object block's decision variable *is* the consensus
+    # variable: it samples w^o_t directly and `object_action_to_consensus`
+    # is a rescaling. Overriding these four hooks lets a task decide
+    # something richer instead -- e.g. `oim.sim2d` decides a contact action
+    # [p_x, p_y, f_n, f_t] and derives the wrench through w = J_c^T f, so
+    # every proposal is inside the friction cone by construction. The
+    # consensus variable, and hence everything ADMM does with it, is
+    # unchanged either way.
+    # ------------------------------------------------------------------
+
+    @property
+    def object_action_dim(self) -> int:
+        """Dimension of the object block's decision variable.
+
+        Defaults to `consensus_dim` (the block decides the consensus value
+        itself). Override when the block decides something that *maps* to
+        the consensus value, in which case this is the dimension the object
+        optimizer samples in.
+        """
+        return self.consensus_dim
+
+    def object_action_bounds(self) -> Tuple[jax.Array, jax.Array]:
+        """Box bounds (lo, hi) on the object block's decision variable.
+
+        Defaults to unbounded. Note that a hard box is generally too weak
+        to express contact feasibility -- use `project_object_action` for
+        anything coupled across dimensions, like a friction cone.
+        """
+        n = self.object_action_dim
+        return -jnp.inf * jnp.ones(n), jnp.inf * jnp.ones(n)
+
+    def object_action_to_consensus(
+        self, obj_state: jax.Array, action: jax.Array
+    ) -> jax.Array:
+        """Map an object-block decision to the consensus value A^o.
+
+        Evaluated *inside* the object rollout, so the map may depend on the
+        object's current configuration (a contact wrench depends on where
+        the object currently is, not just on the action).
+
+        Args:
+            obj_state: The object's configuration x^o_t.
+            action: The object block's decision at time t.
+
+        Returns:
+            The consensus value w^o_t, shape (consensus_dim,).
+        """
+        return action * self.object_action_scale()
+
+    def project_object_action(self, action: jax.Array) -> jax.Array:
+        """Project a sampled object action onto the feasible set.
+
+        Applied to every sample before it is rolled out, so infeasible
+        proposals never reach the cost. Defaults to the identity.
+        """
+        return action
+
+    def initial_object_action(self) -> Optional[jax.Array]:
+        """Seed value for the object block's decision, or None for zeros.
+
+        Zeros are a fine start when the block decides the consensus value
+        directly, but not for a structured action space: a contact point of
+        (0, 0) is the object's own origin, which is *inside* the footprint
+        rather than on it, and every contact quantity derived from it (the
+        surface normal, and hence the sampler's rejection test) is then
+        degenerate. Tasks with such an action space should return a valid
+        point instead.
+
+        Returns:
+            An array of shape `(object_action_dim,)`, broadcast across the
+            horizon, or None to keep the optimizer's own zero init.
+        """
+        return None
+
+    def sample_object_actions(
+        self,
+        nominal: jax.Array,
+        rng: jax.Array,
+        num_samples: int,
+        obj_state: jax.Array,
+    ) -> Optional[jax.Array]:
+        """Optionally take over sampling for the object block.
+
+        Return `None` (the default) to let the injected optimizer sample
+        with its own `sample_knots`. Return an array of shape
+        `(num_samples, H, object_action_dim)` to override it -- needed when
+        the action space has geometry a Gaussian cannot respect, such as a
+        contact point that must stay on the object's boundary.
+
+        `obj_state` is the object's configuration at the start of the
+        horizon, supplied because a geometry-aware proposal generally needs
+        it (where it is worth touching the object depends on where the
+        object currently is relative to its goal and the obstacles).
+
+        N.B. overriding this bypasses the optimizer's own proposal
+        distribution, so it composes with optimizers whose `sample_knots`
+        is a stateless function of `params.mean` (MPPI, CEM, predictive
+        sampling) but *not* with ones carrying their own particle state
+        across iterations (CBO). The optimizer's `update_params` is still
+        what turns the scored samples into the next mean.
+        """
+        return None
 
     def consensus_scale(self) -> jax.Array:
         """Characteristic per-dimension magnitude of the consensus variable.

@@ -4,7 +4,7 @@ from copy import deepcopy
 import mujoco
 
 from oim.algs import MPPI, PredictiveSampling
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.walker import Walker
 
 """

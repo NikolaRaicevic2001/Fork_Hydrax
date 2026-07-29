@@ -135,7 +135,8 @@ class WrenchConsensus(ConsensusSpace):
 def make_object_shim(task: ConsensusTask, dt: float) -> Any:
     """Build a lightweight duck-typed task for the object-level optimizer.
 
-    The object subproblem samples in consensus space (dimension
+    The object subproblem samples in the object block's own action space
+    (dimension `task.object_action_dim`, which defaults to
     `task.consensus_dim`), not robot actuator space, so a
     `SamplingBasedController` (e.g. `MPPI`) built for the object side needs
     its own small task-like object to construct against. `ObjectSubproblem`
@@ -144,18 +145,19 @@ def make_object_shim(task: ConsensusTask, dt: float) -> Any:
     `object_*` methods.
 
     Args:
-        task: The real task, used only to read `consensus_dim`.
+        task: The real task, used to read `object_action_dim` and bounds.
         dt: The planning timestep for the object-level optimizer.
 
     Returns:
         A duck-typed object exposing `.model.nu`, `.dt`, `.u_min`, `.u_max`.
     """
-    nu = task.consensus_dim
+    nu = task.object_action_dim
+    u_min, u_max = task.object_action_bounds()
     return SimpleNamespace(
         model=SimpleNamespace(nu=nu),
         dt=dt,
-        u_min=-jnp.inf * jnp.ones(nu),
-        u_max=jnp.inf * jnp.ones(nu),
+        u_min=u_min,
+        u_max=u_max,
     )
 
 
@@ -164,6 +166,44 @@ class ADMMTrajectory(Trajectory):
     """Trajectory with the realized consensus value A^r(U^r)_t at each step."""
 
     consensus_values: jax.Array
+
+
+class RobotRollout(ABC):
+    """How the robot block advances its state by one planning step.
+
+    This is the *only* place the robot subproblem is tied to a particular
+    simulator. Everything else in this module -- the ADMM loop, the
+    consensus/dual/penalty math, the object subproblem -- is already
+    backend-agnostic, so swapping this one object is what lets the same
+    `ADMM` class drive both an MJX scene and the analytic 2D world in
+    `oim.sim2d`.
+
+    Implementations must be pure functions of (model, state, control): they
+    run inside `jax.lax.scan` under `vmap` and `jit`.
+    """
+
+    @abstractmethod
+    def step(self, model: Any, state: Any, control: jax.Array) -> Any:
+        """Advance the robot-side state by one planning timestep.
+
+        Args:
+            model: The (possibly domain-randomized) model for this rollout.
+            state: The current robot-side state.
+            control: The control action u^r_t.
+
+        Returns:
+            The next state, of the same pytree structure.
+        """
+
+
+class MJXRollout(RobotRollout):
+    """The default backend: one `mjx.step` of a MuJoCo MJX model."""
+
+    def step(
+        self, model: mjx.Model, state: mjx.Data, control: jax.Array
+    ) -> mjx.Data:
+        """Set the control and step the MJX model."""
+        return mjx.step(model, state.replace(ctrl=control))
 
 
 class ObjectSubproblem:
@@ -197,17 +237,30 @@ class ObjectSubproblem:
         self.consensus = consensus
         self.proximal_weight = proximal_weight
 
-    def _rollout(self, obj_state0: jax.Array, ws: jax.Array) -> jax.Array:
-        """Scan the closed-form dynamics over a (H, dim) decision sequence."""
+    def _rollout(
+        self, obj_state0: jax.Array, actions: jax.Array
+    ) -> Tuple[jax.Array, jax.Array]:
+        """Scan the closed-form dynamics over an (H, action_dim) sequence.
+
+        The action -> consensus map runs *inside* the scan, since a contact
+        wrench depends on the object's current pose, not just on the action.
+        With the default (identity-style) map this is exactly the old
+        `actions * object_action_scale()`, evaluated one step at a time.
+
+        Returns:
+            The object states x^o_1..x^o_H, and the consensus values
+            A^o_0..A^o_{H-1} that produced them.
+        """
 
         def step(
-            obj_state: jax.Array, w: jax.Array
-        ) -> Tuple[jax.Array, jax.Array]:
+            obj_state: jax.Array, action: jax.Array
+        ) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array]]:
+            w = self.task.object_action_to_consensus(obj_state, action)
             new_state = self.task.object_dynamics(obj_state, w)
-            return new_state, new_state
+            return new_state, (new_state, w)
 
-        _, states = jax.lax.scan(step, obj_state0, ws)
-        return states
+        _, (states, ws) = jax.lax.scan(step, obj_state0, actions)
+        return states, ws
 
     def optimize(
         self,
@@ -240,16 +293,34 @@ class ObjectSubproblem:
             those decisions.
         """
         opt = self.optimizer
-        scale = self.task.object_action_scale()
 
         def _scan_body(params: Any, rng_i: jax.Array) -> Tuple[Any, None]:
-            knots, params = opt.sample_knots(params)
-            noise_rng, _ = jax.random.split(rng_i)
+            noise_rng, sample_rng = jax.random.split(rng_i)
+            # The task may own the proposal distribution (e.g. contact points
+            # that must stay on the object's boundary); otherwise the
+            # injected optimizer samples as usual. `num_samples` is read
+            # defensively: not every SamplingBasedController exposes one
+            # (Evosax carries its population size inside the ES state), and
+            # those are exactly the ones that must keep their own sampler.
+            num_samples = getattr(opt, "num_samples", None)
+            custom = (
+                None
+                if num_samples is None
+                else self.task.sample_object_actions(
+                    params.mean, sample_rng, num_samples, obj_state0
+                )
+            )
+            if custom is None:
+                knots, params = opt.sample_knots(params)
+            else:
+                knots = custom
             noise = noise_scale * jax.random.normal(noise_rng, knots.shape)
             knots = jnp.clip(knots + noise, opt.task.u_min, opt.task.u_max)
-            ws = knots * scale  # (K, H, dim), physical units
+            knots = self.task.project_object_action(knots)
 
-            states = jax.vmap(self._rollout, in_axes=(None, 0))(obj_state0, ws)
+            states, ws = jax.vmap(self._rollout, in_axes=(None, 0))(
+                obj_state0, knots
+            )
             # J_o: dt-weighted running cost + terminal cost, matching the
             # robot block's convention so the two blocks stay balanced.
             running = self.task.dt * jax.vmap(
@@ -284,8 +355,11 @@ class ObjectSubproblem:
         rngs = jax.random.split(rng, opt.iterations)
         params, _ = jax.lax.scan(_scan_body, params, rngs)
 
-        w_obj = params.mean * scale
-        ref_states = self._rollout(obj_state0, w_obj)
+        # A^o is read off the block's own decision variable (paper eq. 23),
+        # which for a non-trivial action parameterization means rolling the
+        # nominal actions out to recover the wrenches they imply.
+        nominal = self.task.project_object_action(params.mean)
+        ref_states, w_obj = self._rollout(obj_state0, nominal)
         return params, w_obj, ref_states
 
 
@@ -305,6 +379,7 @@ class RobotSubproblem:
         optimizer: SamplingBasedController,
         consensus: ConsensusSpace,
         proximal_weight: float,
+        rollout: Optional[RobotRollout] = None,
     ) -> None:
         """Pair the task with its injected sampling optimizer.
 
@@ -317,11 +392,14 @@ class RobotSubproblem:
                 so both blocks are guaranteed to score the consensus
                 variable identically.
             proximal_weight: Weight (gamma) on the proximal term (eq. 25).
+            rollout: How to advance the robot state one step. Defaults to
+                `MJXRollout`, i.e. a MuJoCo MJX scene.
         """
         self.task = task
         self.optimizer = optimizer
         self.consensus = consensus
         self.proximal_weight = proximal_weight
+        self.rollout = rollout or MJXRollout()
 
     @partial(
         jax.vmap,
@@ -349,8 +427,7 @@ class RobotSubproblem:
             inputs: Tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         ) -> Tuple[mjx.Data, Tuple[mjx.Data, jax.Array, jax.Array, jax.Array]]:
             u, z_t, dual_t, ref_t = inputs
-            x = x.replace(ctrl=u)
-            x = mjx.step(model, x)
+            x = self.rollout.step(model, x, u)
             # J_r: the task's own cost, dt-weighted per oim convention.
             cost = self.optimizer.dt * self.task.robot_running_cost(x, u, ref_t)
             # A^r: the wrench the robot's motion actually imparts on the
@@ -502,8 +579,7 @@ class RobotSubproblem:
         controls = opt.interp_func(tq, tk, params.mean[None, ...])[0]
 
         def _scan_fn(x: mjx.Data, u: jax.Array) -> Tuple[mjx.Data, jax.Array]:
-            x = x.replace(ctrl=u)
-            x = mjx.step(self.task.model, x)
+            x = self.rollout.step(self.task.model, x, u)
             return x, self.task.realized_consensus(x)
 
         _, consensus_vals = jax.lax.scan(_scan_fn, state, controls)
@@ -592,6 +668,8 @@ class ADMM(SamplingBasedController):
         noise_min: float = 0.0,
         noise_kappa: float = 0.0,
         noise_max: Optional[float] = None,
+        rollout: Optional[RobotRollout] = None,
+        debug_print: bool = True,
     ) -> None:
         """Build the ADMM controller from two pre-built sub-optimizers.
 
@@ -623,6 +701,15 @@ class ADMM(SamplingBasedController):
                 (more noise -> more disagreement -> larger residual -> more
                 noise). Defaults to `noise_min`, i.e. annealing is inert
                 (a constant noise floor) unless explicitly raised.
+            rollout: How the robot block advances its state one step.
+                Defaults to `MJXRollout` (a MuJoCo MJX scene); pass
+                `oim.sim2d.Analytic2DRollout` to drive the 2D world with
+                this same controller.
+            debug_print: Whether to print the residuals and penalty weight
+                every ADMM iteration. On by default, but note this is a
+                host callback inside the compiled loop, so it costs a
+                synchronization per iteration -- turn it off for timing
+                runs or long closed loops.
         """
         if n_admm < 1:
             raise ValueError("n_admm must be at least 1")
@@ -644,12 +731,13 @@ class ADMM(SamplingBasedController):
         self.noise_min = noise_min
         self.noise_kappa = noise_kappa
         self.noise_max = noise_min if noise_max is None else noise_max
+        self.debug_print = debug_print
 
         self.object_subproblem = ObjectSubproblem(
             task, object_optimizer, consensus, proximal_weight
         )
         self.robot_subproblem = RobotSubproblem(
-            task, robot_optimizer, consensus, proximal_weight
+            task, robot_optimizer, consensus, proximal_weight, rollout=rollout
         )
 
         # Alias bookkeeping attributes off robot_optimizer, rather than
@@ -678,6 +766,16 @@ class ADMM(SamplingBasedController):
         )
         h = self.object_optimizer.num_knots
         dim = self.consensus.dim
+
+        # Let the task seed its own action space if zeros are degenerate
+        # there (e.g. a contact point at the object's origin).
+        seed_action = self.task.initial_object_action()
+        if seed_action is not None:
+            object_params = object_params.replace(
+                mean=jnp.broadcast_to(
+                    jnp.asarray(seed_action), (h, self.task.object_action_dim)
+                )
+            )
         return ADMMParams(
             robot_params=robot_params,
             object_params=object_params,
@@ -695,6 +793,21 @@ class ADMM(SamplingBasedController):
     def _shift(self, seq: jax.Array) -> jax.Array:
         """Receding-horizon shift: seq[t] <- seq[t+1], last slot <- 0."""
         return jnp.concatenate([seq[1:], jnp.zeros_like(seq[:1])], axis=0)
+
+    def _shift_object(self, seq: jax.Array) -> jax.Array:
+        """Receding-horizon shift for the object block's decision.
+
+        Zero-filling the vacated tail is right when the decision *is* the
+        consensus value (no wrench is a valid plan), but wrong for a
+        structured action space, where the zero vector need not be a
+        feasible action at all -- a zero contact point is the object's own
+        origin, which is not on its boundary. There the last value is held
+        instead, which is always feasible since it came from the previous
+        solution.
+        """
+        if self.task.initial_object_action() is None:
+            return self._shift(seq)
+        return jnp.concatenate([seq[1:], seq[-1:]], axis=0)
 
     def _admm_iteration(
         self, carry: _ADMMCarry, obj_state0: jax.Array, state: mjx.Data
@@ -754,13 +867,14 @@ class ADMM(SamplingBasedController):
             jnp.where(dual_res > 10.0 * primal_res, carry.rho / 2.0, carry.rho),
         )
 
-        jax.debug.print(
-            "ADMM it={it} primal={p:.4f} dual={d:.4f} rho={r:.3f}",
-            it=carry.it,
-            p=primal_res,
-            d=dual_res,
-            r=rho,
-        )
+        if self.debug_print:
+            jax.debug.print(
+                "ADMM it={it} primal={p:.4f} dual={d:.4f} rho={r:.3f}",
+                it=carry.it,
+                p=primal_res,
+                d=dual_res,
+                r=rho,
+            )
 
         new_carry = carry.replace(
             it=carry.it + 1,
@@ -783,7 +897,7 @@ class ADMM(SamplingBasedController):
         # Warm-start: shift the object mean and the consensus/dual variables
         # by one real control step.
         object_params = params.object_params.replace(
-            mean=self._shift(params.object_params.mean)
+            mean=self._shift_object(params.object_params.mean)
         )
         z = self._shift(params.z)
         gamma_o = self._shift(params.gamma_o)

@@ -5,7 +5,7 @@ import mujoco
 
 from oim.algs import CEM
 from oim.risk import AverageCost
-from oim.simulation.deterministic import run_interactive
+from oim.sim3d.deterministic import run_interactive
 from oim.tasks.humanoid_mocap import HumanoidMocap, HumanoidMocapOptions
 
 """

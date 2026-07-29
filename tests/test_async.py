@@ -6,7 +6,7 @@ import numpy as np
 
 from oim import ROOT
 from oim.algs.predictive_sampling import PredictiveSampling
-from oim.simulation.asynchronous import (
+from oim.sim3d.asynchronous import (
     SharedMemoryMujocoData,
     SharedMemoryNumpyArray,
     run_controller,
