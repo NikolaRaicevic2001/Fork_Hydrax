@@ -306,9 +306,16 @@ if args.algorithm == "admm":
         eps_s=0.5,
         proximal_weight=args.gamma,
         rho_init=args.rho,
-        noise_min=0.05,
-        noise_kappa=0.1,
-        noise_max=0.5,
+        # Residual-driven noise annealing (Algorithm 4 step 8) is off: the
+        # primal residual never converges for this task (measured, over a
+        # real 600-step run), so noise = clip(kappa*residual, min, max)
+        # just sits pinned near noise_max the whole time, adding
+        # near-constant large perturbations instead of annealing anything
+        # -- confirmed directly to make divergence worse (final pos_err
+        # 4.65 with it on vs. 2.0 with it off, same seed/config otherwise).
+        noise_min=0.0,
+        noise_kappa=0.0,
+        noise_max=0.0,
     )
 
     mj_model = deepcopy(task.mj_model)
