@@ -140,8 +140,8 @@ def run_2d(
             the physics and the ADMM math in a debugger.
 
     Returns:
-        A dict with the object/robot trajectories, per-step wrenches and
-        residuals, and whether the goal was reached.
+        A dict with the object/robot trajectories, per-step wrenches,
+        primal/dual residuals, goal errors, and whether the goal was reached.
     """
     optimize = jax.jit(ctrl.optimize) if jit else ctrl.optimize
     get_action = jax.jit(ctrl.get_action) if jit else ctrl.get_action
@@ -153,7 +153,10 @@ def run_2d(
         "wrench": [],
         "w_obj": [],
         "primal_residual": [],
+        "dual_residual": [],
         "rho": [],
+        "pos_err": [],
+        "theta_err": [],
     }
     reached = False
 
@@ -168,18 +171,22 @@ def run_2d(
         log["wrench"].append(np.asarray(state.wrench))
         log["w_obj"].append(np.asarray(params.z))
         log["primal_residual"].append(float(params.primal_residual))
+        log["dual_residual"].append(float(params.dual_residual))
         log["rho"].append(float(params.rho))
 
         pos_err = float(jnp.linalg.norm(state.object_pose[:2] - task.goal[:2]))
         theta_err = float(
             jnp.abs(wrap_angle(state.object_pose[2] - task.goal[2]))
         )
+        log["pos_err"].append(pos_err)
+        log["theta_err"].append(theta_err)
         if verbose and step % 10 == 0:
             print(
                 f"step {step:4d}  pos_err={pos_err:.4f}  "
                 f"theta_err={theta_err:.4f}  "
                 f"|w_rob|={float(jnp.linalg.norm(state.wrench)):.3f}  "
                 f"primal={log['primal_residual'][-1]:.3f}  "
+                f"dual={log['dual_residual'][-1]:.3f}  "
                 f"rho={log['rho'][-1]:.2f}"
             )
         if pos_err < goal_pos_tol and theta_err < goal_theta_tol:

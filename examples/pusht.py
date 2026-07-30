@@ -1,9 +1,12 @@
 import argparse
 import math
+import os
 from copy import deepcopy
 
 import mujoco
+import numpy as np
 
+from oim import ROOT
 from oim.algs import (
     ADMM,
     CBO,
@@ -13,12 +16,108 @@ from oim.algs import (
     WrenchConsensus,
     make_object_shim,
 )
+from oim.objects import Box, Circle, Polygon, rotate, t_shape_footprint
 from oim.sim3d.deterministic import run_interactive
-from oim.tasks.pusht import PushT
+from oim.sim3d.run import run_3d_admm
+from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
 
 """
 Run an interactive simulation of the push-T task.
 """
+
+
+def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
+    """A closed polyline tracing an obstacle, for filling in matplotlib.
+
+    Same shapes `examples/pusht2d.py` draws (`oim.objects`), since
+    `CLUTTER_OBSTACLES` is the same geometry the 2D `clutter` scenario uses.
+    """
+    if isinstance(obs, Circle):
+        ang = np.linspace(0, 2 * np.pi, n)
+        return np.asarray(obs.center) + obs.radius * np.stack(
+            [np.cos(ang), np.sin(ang)], axis=1
+        )
+    if isinstance(obs, Polygon):
+        return np.asarray(obs.vertices)
+    if isinstance(obs, Box):
+        he = np.asarray(obs.half_extents)
+        corners = (
+            np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=float) * he
+        )
+        return np.asarray(obs.center) + np.asarray(
+            rotate(obs.angle, corners)
+        )
+    raise TypeError(f"no outline for {type(obs).__name__}")
+
+
+def _footprint_world(pose: np.ndarray) -> np.ndarray:
+    """The T-block's footprint at a given SE(2) pose, in world coordinates."""
+    verts = np.asarray(t_shape_footprint().vertices)
+    return np.asarray(pose[:2]) + np.asarray(rotate(float(pose[2]), verts))
+
+
+def plot_run(log: dict, path: str, stride: int = 5) -> None:
+    """Draw the block's swept footprint, the pusher path, and diagnostics.
+
+    The 3D counterpart of `examples/pusht2d.py::plot_run` -- same layout,
+    fed from `run_3d_admm`'s log instead of `run_2d`'s.
+    """
+    import matplotlib  # noqa: PLC0415
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    fig, (ax, ax_r) = plt.subplots(
+        1, 2, figsize=(13, 5.5), gridspec_kw={"width_ratios": [1.4, 1]}
+    )
+    for obs in CLUTTER_OBSTACLES.shapes:
+        poly = _obstacle_outline(obs)
+        ax.fill(poly[:, 0], poly[:, 1], color="0.4", zorder=1)
+    goal = _footprint_world(np.asarray(GOAL))
+    closed = np.vstack([goal, goal[:1]])
+    ax.plot(
+        closed[:, 0], closed[:, 1], color="green", lw=2, label="goal", zorder=4
+    )
+    ax.set_aspect("equal")
+    ax.grid(alpha=0.3)
+
+    poses = log["block_pose"]
+    n = len(poses)
+    for i in range(0, n, stride):
+        w = _footprint_world(poses[i])
+        ax.fill(
+            w[:, 0],
+            w[:, 1],
+            color=plt.cm.viridis(i / max(n - 1, 1)),
+            alpha=0.35,
+            zorder=2,
+        )
+    for pose, colour in ((poses[0], "tab:blue"), (poses[-1], "tab:red")):
+        w = _footprint_world(pose)
+        ax.fill(w[:, 0], w[:, 1], color=colour, alpha=0.9, zorder=3)
+
+    pusher = log["pusher_pos"]
+    ax.plot(
+        pusher[:, 0], pusher[:, 1], "k.-", ms=3, lw=1, label="pusher", zorder=5
+    )
+    ax.set_title(
+        f"{'reached' if log['reached'] else 'not reached'} in {n - 1} steps"
+    )
+    ax.legend(loc="upper left")
+
+    ax_r.plot(log["primal_residual"], label="primal residual")
+    ax_r.plot(log["dual_residual"], label="dual residual")
+    ax_r.plot(log["rho"], label="rho")
+    ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
+    ax_r.set_xlabel("control step")
+    ax_r.legend()
+    ax_r.grid(alpha=0.3)
+    ax_r.set_title("ADMM diagnostics")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    print(f"saved plot to {path}")
 
 
 def build_sub_optimizer(
@@ -132,6 +231,20 @@ admm_parser.add_argument("--n-admm", type=int, default=8)
 admm_parser.add_argument("--rho", type=float, default=10.0)
 admm_parser.add_argument("--gamma", type=float, default=0.1)
 admm_parser.add_argument("--seed", type=int, default=5)
+admm_parser.add_argument(
+    "--headless",
+    action="store_true",
+    help="Run without the interactive viewer, for a fixed number of steps "
+    "(--steps), and save a trajectory/residual diagnostics plot instead "
+    "of (optionally) recording a video. Needed for automated/no-display "
+    "runs, since --record still requires a live viewer otherwise.",
+)
+admm_parser.add_argument(
+    "--steps",
+    type=int,
+    default=200,
+    help="Real control steps, --headless only.",
+)
 args = parser.parse_args()
 
 impl = "warp" if args.warp else "jax"
@@ -195,14 +308,23 @@ if args.algorithm == "admm":
     else:
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
 
-    run_interactive(
-        ctrl,
-        mj_model,
-        mj_data,
-        frequency=1.0 / plan_dt,
-        show_traces=False,
-        record_video=args.record,
-    )
+    if args.headless:
+        log = run_3d_admm(
+            task, ctrl, ctrl.init_params(seed=args.seed), mj_model, mj_data,
+            frequency=1.0 / plan_dt, max_steps=args.steps,
+        )
+        out_dir = os.path.join(ROOT, "recordings")
+        os.makedirs(out_dir, exist_ok=True)
+        plot_run(log, os.path.join(out_dir, f"pusht3d_{args.robot}_admm.png"))
+    else:
+        run_interactive(
+            ctrl,
+            mj_model,
+            mj_data,
+            frequency=1.0 / plan_dt,
+            show_traces=False,
+            record_video=args.record,
+        )
 else:
     # Plain (non-ADMM) MPC against the basic reach-and-touch running_cost.
     # xarm6 still needs clutter=True (no non-cluttered xarm6 scene exists).

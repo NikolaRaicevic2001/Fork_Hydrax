@@ -151,6 +151,7 @@ def plot_run(
     ax.legend(loc="upper left")
 
     ax_r.plot(log["primal_residual"], label="primal residual")
+    ax_r.plot(log["dual_residual"], label="dual residual")
     ax_r.plot(log["rho"], label="rho")
     ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
     ax_r.set_xlabel("control step")

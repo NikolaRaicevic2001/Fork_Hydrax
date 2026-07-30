@@ -610,6 +610,10 @@ class ADMMParams:
         rho: The current ADMM penalty weight (adapted online).
         primal_residual: The last ADMM iteration's primal residual, carried
             across real control steps to seed exploration-noise annealing.
+        dual_residual: The last ADMM iteration's dual residual. Not used by
+            any control-flow logic (only `primal_residual` feeds the noise
+            anneal and the adaptive-`rho` rule reads both from `_ADMMCarry`
+            directly) -- carried here purely so callers can log/plot it.
         rng: PRNG key for the ADMM-level exploration noise.
     """
 
@@ -620,6 +624,7 @@ class ADMMParams:
     gamma_r: jax.Array
     rho: jax.Array
     primal_residual: jax.Array
+    dual_residual: jax.Array
     rng: jax.Array
 
     @property
@@ -798,6 +803,7 @@ class ADMM(SamplingBasedController):
             # must stay finite since it's multiplied into the noise scale
             # (an actual inf would immediately turn every sampled knot nan).
             primal_residual=jnp.asarray(100.0, dtype=jnp.float32),
+            dual_residual=jnp.asarray(100.0, dtype=jnp.float32),
             rng=jax.random.key(seed),
         )
 
@@ -972,6 +978,7 @@ class ADMM(SamplingBasedController):
             gamma_r=final_carry.gamma_r,
             rho=final_carry.rho,
             primal_residual=final_carry.primal_res,
+            dual_residual=final_carry.dual_res,
             rng=final_carry.rng,
         )
         return new_params, final_rollouts
