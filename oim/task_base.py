@@ -234,12 +234,15 @@ class ConsensusTask(ABC):
     def object_action_bounds(self) -> Tuple[jax.Array, jax.Array]:
         """Box bounds (lo, hi) on the object block's decision variable.
 
-        Defaults to unbounded. Note that a hard box is generally too weak
-        to express contact feasibility -- use `project_object_action` for
-        anything coupled across dimensions, like a friction cone.
+        Defaults to +/- `consensus_scale()` (the friction-cone limit): when
+        the block decides the consensus wrench directly, each component
+        still can't exceed what the support surface can transmit. Override
+        when `object_action_dim != consensus_dim` (a structured action
+        space), where `project_object_action` should express any such
+        coupled bound instead (e.g. a friction cone proper).
         """
-        n = self.object_action_dim
-        return -jnp.inf * jnp.ones(n), jnp.inf * jnp.ones(n)
+        scale = self.consensus_scale()
+        return -scale, scale
 
     def object_action_to_consensus(
         self, obj_state: jax.Array, action: jax.Array

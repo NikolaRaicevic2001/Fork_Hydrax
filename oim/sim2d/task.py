@@ -144,6 +144,9 @@ class PushT2D(ConsensusTask):
         # search can jump between faces rather than only refine locally.
         self._boundary_candidates = footprint.sample_boundary(6)
         self.w_ee, self.r0, self.r_r = w_ee, r0, r_r
+        # Same as PushT's _ell_r (paper eq. 21): not exposed as constructor
+        # args there either, so kept hardcoded here too for parity.
+        self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
         self.q_pos, self.q_theta = q_pos, q_theta
         self.qf_pos, self.qf_theta = qf_pos, qf_theta
         self.w_obstacle_robot = w_obstacle_robot
@@ -237,9 +240,14 @@ class PushT2D(ConsensusTask):
         return self.object_model.action_scale
 
     def object_action_bounds(self) -> Tuple[jax.Array, jax.Array]:
-        """Box bounds; the friction cone itself is handled by projection."""
+        """Box bounds; the friction cone itself is handled by projection.
+
+        Direct-wrench mode defers to the base class (+/- consensus_scale).
+        Contact-action mode needs its own box, since the action isn't the
+        wrench itself.
+        """
         if not self.contact_actions:
-            return -jnp.inf * jnp.ones(3), jnp.inf * jnp.ones(3)
+            return super().object_action_bounds()
         reach = self.footprint.bounding_radius
         lo = jnp.array([-reach, -reach, 0.0, -self.mu_c * self.f_max])
         hi = jnp.array([reach, reach, self.f_max, self.mu_c * self.f_max])
@@ -368,10 +376,11 @@ class PushT2D(ConsensusTask):
     def robot_running_cost(
         self, state: Sim2DState, control: jax.Array, obj_ref_t: jax.Array
     ) -> jax.Array:
-        """J_r = effort + approach + obstacle clearance + goal + coupling.
+        """J_r = effort + approach + align + clearance + goal + coupling.
 
         Mirrors `PushT.robot_running_cost`, minus the terms that only mean
-        something for a 3D end-effector (tilt, tip height). The ADMM
+        something for a 3D end-effector (tilt, tip height) -- there is no
+        orientation or height for a point/disc robot to shape. The ADMM
         consensus penalty is *not* added here -- the ADMM layer adds it.
         """
         pose = state.object_pose
@@ -380,12 +389,20 @@ class PushT2D(ConsensusTask):
         effort = self.r_r * jnp.sum(control**2)
         d_ee = jnp.sum((robot - pose[:2]) ** 2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
+
+        to_object = pose[:2] - robot
+        to_ref = obj_ref_t[:2] - pose[:2]
+        cos_angle = jnp.sum(to_object * to_ref) / (
+            jnp.linalg.norm(to_object) * jnp.linalg.norm(to_ref) + 1e-6
+        )
+        align = self.w_align * jnp.clip(self.gamma0 - cos_angle, 0.0, None)
+
         clearance = self.obstacle_field.hinge_cost(
             robot[None, :], self.w_obstacle_robot, self.obstacle_margin
         )
         ell_o = se2_distance_sq(pose, self.goal, self.q_pos, self.q_theta)
         ell_c = se2_distance_sq(pose, obj_ref_t, self.q_pos, self.q_theta)
-        return effort + approach + clearance + ell_o + ell_c
+        return effort + approach + align + clearance + ell_o + ell_c
 
     def robot_terminal_cost(self, state: Sim2DState) -> jax.Array:
         """Heavier goal tracking, matching the object block's terminal cost."""
