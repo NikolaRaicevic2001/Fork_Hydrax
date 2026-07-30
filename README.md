@@ -48,7 +48,7 @@ subproblems.
 ## Setup
 
 Requires Python ≥ 3.12 and CUDA 13. Managed entirely by
-[uv](https://docs.astral.sh/uv/) — there is no conda environment.
+[uv](https://docs.astral.sh/uv/)
 
 ```bash
 git clone https://github.com/NikolaRaicevic2001/Object-Informed-Manipulation-MJX.git
@@ -63,10 +63,6 @@ uv sync
 | `source .venv/bin/activate` | Activate it instead, if you prefer |
 | `uv run pytest` | Run the test suite |
 | `uv run ruff check .` | Lint |
-
-`.venv` bakes in absolute paths, so **moving or renaming the repository
-directory breaks it**. Re-create it with
-`uv venv --clear --python 3.12 && uv sync`.
 
 ## Quick start
 
@@ -108,21 +104,72 @@ uv run python examples/pusht.py --robot xarm6 admm
 uv run python examples/pusht.py admm --robot-opt mppi --object-opt cbo
 
 # No display: fixed step count, diagnostics plot + results JSON
-uv run python examples/pusht.py admm --headless --steps 600
+uv run python examples/pusht.py --robot xarm6 admm --headless --steps 600
 
 # Flat (non-hierarchical) baselines on the same task, for comparison
 uv run python examples/pusht.py mppi
 uv run python examples/pusht.py ps
 ```
 
+Flag order matters: these go **before** the algorithm name.
+
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--robot {point,xarm6}` | `point` | Embodiment. `xarm6` always implies the cluttered scene |
-| `--record` | off | Write an mp4 (needs `ffmpeg`, and a live viewer) |
+| `--record` | off | Write an mp4 (needs `ffmpeg`). Combines with `--headless`, which renders offscreen — no display required |
 | `--warp` | off | Use the experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) backend instead of JAX for rollouts |
+
+These go **after** `admm`:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
 | `--robot-opt`, `--object-opt` | `mppi` | Inner solver per ADMM block: `mppi`, `cem`, `ps`, `cbo` |
-| `--headless` | off | No viewer; run `--steps` steps and save plot + results |
-| `--steps` | 200 | Control steps, `--headless` only |
+| `--show-plans` | off | Overlay both blocks' predicted object trajectories — live, and in the recording (below) |
+| `--headless` | off | No viewer; run `--steps` steps and save plot + results. Add `--record` for an mp4 too |
+| `--steps` | 200 | Control steps. `--headless` only — the viewer path runs until you close the window |
+
+#### Watching the two blocks negotiate
+
+```bash
+# live, in the viewer
+uv run python examples/pusht.py --robot xarm6 admm --show-plans
+
+# composited into the recorded video, and logged for offline review
+uv run python examples/pusht.py --robot xarm6 --record admm \
+    --headless --steps 300 --show-plans
+```
+
+The consensus variable is a *wrench*, which is hard to read as a number.
+What it is negotiating over is object motion, and **both blocks predict a
+trajectory of the same object** — so `--show-plans` draws the pair:
+
+| Colour | Curve |
+| --- | --- |
+| **Amber** | What the object block intends — its decision $\mathbf{W}^o$ through the limit-surface dynamics, i.e. $x^{o*}$ |
+| **Teal** | What the robot block would actually produce — its nominal $\mathbf{U}^r$ rolled out through MJX |
+
+Where the curves lie on top of each other the blocks agree; where they peel
+apart is the primal residual, made spatial. Each is drawn as a path with
+periodic bars showing the object's predicted *heading* (orientation is half
+the goal here, so a position-only path would hide a whole class of
+disagreement), fading along the horizon so time direction reads off a still
+frame.
+
+It works in both output paths. The passive viewer's `user_scn` persists
+between frames, so the overlay keeps a fixed slot in it; an offscreen
+`mujoco.Renderer` rebuilds its scene on every `update_scene`, so there the
+overlay is re-appended per frame, after that call. Under `--headless` the
+two plans are also written to the states JSON as `object_plan` and
+`robot_plan`, `(steps_run, H, 3)` each — so the divergence can be measured
+offline rather than only watched.
+
+Cost, measured rather than assumed: one extra nominal rollout per control
+step, **6.2 ms against `optimize`'s 361 ms — 1.7%**, or +1.2% wall clock.
+The plans are recomputed on demand rather than threaded through the ADMM
+loop, so with the flag off nothing runs at all and timing is untouched.
+
+On a machine with no display at all, set `MUJOCO_GL=egl` (or `osmesa` for
+software rendering) so the offscreen renderer can get a GL context.
 
 ### Push-T in 2D
 
@@ -189,7 +236,9 @@ log = run_2d(task, ctrl, params, robot_pos0=(0.0, -0.13), max_steps=200)
 
 ### Shared ADMM knobs
 
-Same flag names and meanings in both worlds:
+Same flag names and meanings in both worlds. In 3D these all belong to the
+`admm` subcommand, so they go after it; 2D has no subcommands, so order is
+free there.
 
 | Flag | 3D | 2D | Meaning |
 | --- | --- | --- | --- |
@@ -215,8 +264,18 @@ results JSON of a run pair up:
 | --- | --- |
 | `oim/recordings/pusht{2,3}d_*.png` | Always (2D), `--headless` (3D) — trajectory + residual diagnostics |
 | `oim/recordings/pusht2d_*.gif` | `--animate` |
-| `oim/recordings/pusht3d_*.mp4` | `--record` |
-| `oim/results/pusht{2,3}d_*.json` | Always — hyperparameters, per-step residuals, goal errors, whether the goal was reached |
+| `oim/recordings/pusht3d_*.mp4` | `--record`, with or without `--headless` |
+| `oim/results/pusht{2,3}d_*_metrics_*.json` | Always — hyperparameters, per-step ADMM residuals and $\rho$, goal errors, whether the goal was reached |
+| `oim/results/pusht{2,3}d_*_states_*.json` | Always — the scene and the motion, enough to reconstruct the run without the video |
+
+The states file splits what never moves from what does. The goal, the
+obstacles and the object's footprint are written **once**; the object pose
+and twist, robot position and velocity, applied control, and realized and
+agreed wrench are written **every control step** — plus full `qpos`/`qvel`
+in 3D, so a run can be replayed exactly rather than only plotted. Both
+worlds use the same key names and frames, so a 2D and a 3D run can be
+compared entry for entry. Each file carries a `schema` block describing its
+own indexing and conventions.
 
 ### Other entry points
 
@@ -622,6 +681,7 @@ oim/
 ├── sim3d/                MuJoCo drivers
 │   ├── deterministic.py  run_interactive: viewer, replanning, mp4 recording
 │   ├── run.py            run_3d_admm: headless, logs what run_2d logs
+│   ├── plan_overlay.py   both blocks' predicted object paths, in the viewer
 │   └── asynchronous.py   controller and simulator in separate processes
 │
 ├── tasks/                MuJoCo tasks — pusht.py is the ADMM one

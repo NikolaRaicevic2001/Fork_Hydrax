@@ -373,6 +373,24 @@ class ObjectSubproblem:
         ref_states, w_obj = self._rollout(obj_state0, nominal)
         return params, w_obj, ref_states
 
+    def nominal_plan(self, obj_state0: jax.Array, params: Any) -> jax.Array:
+        """The object trajectory this block currently intends, x^o_1..x^o_H.
+
+        The same rollout `optimize` ends with, recomputed from the stored
+        nominal so a caller can ask for it without re-solving. Cheap: H
+        closed-form dynamics steps, no sampling and no simulator.
+
+        Args:
+            obj_state0: The object's current configuration x^o_0.
+            params: The object optimizer's policy parameters.
+
+        Returns:
+            Object states of shape (H, object_state_dim).
+        """
+        nominal = self.task.project_object_action(params.mean)
+        states, _ = self._rollout(obj_state0, nominal)
+        return states
+
 
 class RobotSubproblem:
     """Robot-level ADMM subproblem: real MJX contact, pluggable optimizer.
@@ -595,6 +613,38 @@ class RobotSubproblem:
 
         _, consensus_vals = jax.lax.scan(_scan_fn, state, controls)
         return consensus_vals
+
+    def nominal_plan(self, state: mjx.Data, params: Any) -> jax.Array:
+        """The object trajectory this block's nominal controls would produce.
+
+        The robot block's counterpart to `ObjectSubproblem.nominal_plan`,
+        and the reason the pair is worth looking at: both are trajectories
+        of the *same* object, so their disagreement is the consensus
+        residual made spatial rather than scalar.
+
+        Unlike the object block's, this one costs a real rollout -- H steps
+        of the simulator -- but only one, against the `num_samples` the
+        block already ran, so it is a fraction of a percent of a control
+        step.
+
+        Args:
+            state: The robot-side state to roll out from.
+            params: The robot optimizer's policy parameters.
+
+        Returns:
+            Object states of shape (H, object_state_dim).
+        """
+        opt = self.optimizer
+        tk = params.tk
+        tq = jnp.linspace(tk[0], tk[-1], opt.ctrl_steps)
+        controls = opt.interp_func(tq, tk, params.mean[None, ...])[0]
+
+        def _scan_fn(x: mjx.Data, u: jax.Array) -> Tuple[mjx.Data, jax.Array]:
+            x = self.rollout.step(self.task.model, x, u)
+            return x, self.task.object_state_from_robot(x)
+
+        _, obj_states = jax.lax.scan(_scan_fn, state, controls)
+        return obj_states
 
 
 @dataclass
@@ -982,6 +1032,42 @@ class ADMM(SamplingBasedController):
             rng=final_carry.rng,
         )
         return new_params, final_rollouts
+
+    def nominal_plans(
+        self, state: mjx.Data, params: ADMMParams
+    ) -> Tuple[jax.Array, jax.Array]:
+        """Both blocks' predicted object trajectories, for visualization.
+
+        The consensus is an agreement about a *wrench*, which is hard to
+        read as a number but easy to read as motion: these are the two
+        object trajectories that wrench is being negotiated over. Where they
+        coincide the blocks agree; where they diverge is exactly what the
+        primal residual is measuring.
+
+        Deliberately not folded into `optimize`'s return. Both plans are
+        recomputed here from the stored nominals, so a caller that never
+        asks pays nothing at all -- no extra tracing, no extra rollout, no
+        change to the ADMM loop. A caller that does ask pays one object
+        rollout (closed-form, negligible) and one simulator rollout, against
+        the `num_samples * n_admm` the step already ran.
+
+        Args:
+            state: The robot-side state the plans start from.
+            params: Policy parameters as returned by `optimize`.
+
+        Returns:
+            `(object_plan, robot_plan)`, each (H, object_state_dim): what
+            the object block intends, and what the robot block's controls
+            would actually produce.
+        """
+        obj_state0 = self.task.object_state_from_robot(state)
+        object_plan = self.object_subproblem.nominal_plan(
+            obj_state0, params.object_params
+        )
+        robot_plan = self.robot_subproblem.nominal_plan(
+            state, params.robot_params
+        )
+        return object_plan, robot_plan
 
     def sample_knots(self, params: ADMMParams) -> Tuple[jax.Array, ADMMParams]:
         """Not used -- `ADMM.optimize()` overrides the generic template."""

@@ -73,9 +73,7 @@ def get_interp_func(method: InterpMethodType) -> InterpFuncType:
     return interp_func
 
 
-def interp_akima(
-    tq: jax.Array, tk: jax.Array, knots: jax.Array
-) -> jax.Array:
+def interp_akima(tq: jax.Array, tk: jax.Array, knots: jax.Array) -> jax.Array:
     """Akima spline interpolation over a batch of waypoint sequences.
 
     Uses ``interpax.Akima1DInterpolator`` (Akima, "A New Method of
@@ -153,9 +151,7 @@ def compute_b_spline_matrix(
     return b
 
 
-def interp_bspline(
-    bmat: jax.Array, knots: jax.Array
-) -> jax.Array:
+def interp_bspline(bmat: jax.Array, knots: jax.Array) -> jax.Array:
     """B-spline interpolation via a pre-computed basis matrix.
 
     Args:

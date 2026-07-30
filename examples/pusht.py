@@ -2,7 +2,6 @@ import argparse
 import math
 import os
 from copy import deepcopy
-from datetime import datetime
 
 import mujoco
 import numpy as np
@@ -21,23 +20,11 @@ from oim.objects import Box, Circle, Polygon, rotate, t_shape_footprint
 from oim.sim3d.deterministic import run_interactive
 from oim.sim3d.run import run_3d_admm
 from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
-from oim.utils.results import save_run_results
+from oim.utils.results import RunName, save_run_metrics, save_run_states
 
 """
 Run an interactive simulation of the push-T task.
 """
-
-
-def _base_name(robot: str, method: str) -> str:
-    """`pusht3d_{robot}_{method}_{timestamp}`, no extension.
-
-    Same scheme `examples/pusht2d.py` uses
-    (`pusht2d_{scenario}_{method}_{timestamp}`), computed once and reused
-    for every output of one run (plot/results), so they pair up under the
-    same timestamp instead of each getting its own.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"pusht3d_{robot}_{method}_{timestamp}"
 
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
@@ -95,7 +82,7 @@ def plot_run(log: dict, path: str, stride: int = 5) -> None:
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
 
-    poses = log["block_pose"]
+    poses = log["object_pose"]
     n = len(poses)
     for i in range(0, n, stride):
         w = _footprint_world(poses[i])
@@ -110,7 +97,7 @@ def plot_run(log: dict, path: str, stride: int = 5) -> None:
         w = _footprint_world(pose)
         ax.fill(w[:, 0], w[:, 1], color=colour, alpha=0.9, zorder=3)
 
-    pusher = log["pusher_pos"]
+    pusher = log["robot_pos"]
     ax.plot(
         pusher[:, 0], pusher[:, 1], "k.-", ms=3, lw=1, label="pusher", zorder=5
     )
@@ -208,7 +195,8 @@ parser.add_argument(
 parser.add_argument(
     "--record",
     action="store_true",
-    help="Record an mp4 of the run to oim/recordings/ (needs ffmpeg).",
+    help="Record an mp4 of the run to oim/recordings/ (needs ffmpeg). "
+    "Works with or without --headless; headless renders offscreen.",
 )
 parser.add_argument(
     "--robot",
@@ -249,15 +237,26 @@ admm_parser.add_argument(
     "--headless",
     action="store_true",
     help="Run without the interactive viewer, for a fixed number of steps "
-    "(--steps), and save a trajectory/residual diagnostics plot instead "
-    "of (optionally) recording a video. Needed for automated/no-display "
-    "runs, since --record still requires a live viewer otherwise.",
+    "(--steps), and save a trajectory/residual diagnostics plot and a "
+    "results JSON. Combines with --record, which renders offscreen here "
+    "and so needs no display (set MUJOCO_GL=egl if there isn't one).",
 )
 admm_parser.add_argument(
     "--steps",
     type=int,
     default=200,
     help="Real control steps, --headless only.",
+)
+admm_parser.add_argument(
+    "--show-plans",
+    action="store_true",
+    help="Overlay both ADMM blocks' predicted object trajectories in the "
+    "viewer: amber for what the object block intends, teal for what the "
+    "robot block's controls would actually produce. Where the two part "
+    "company is the consensus disagreement, made visible. Works in the "
+    "viewer and, with --headless --record, in the recorded video; either "
+    "way costs one extra nominal rollout per control step. Under "
+    "--headless the two plans are also written to the states JSON.",
 )
 args = parser.parse_args()
 
@@ -330,14 +329,21 @@ if args.algorithm == "admm":
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
 
     if args.headless:
+        name = RunName("pusht3d", args.robot, "admm")
+        out_dir = os.path.join(ROOT, "recordings")
+        results_dir = os.path.join(ROOT, "results")
+        os.makedirs(out_dir, exist_ok=True)
         log = run_3d_admm(
             task, ctrl, ctrl.init_params(seed=args.seed), mj_model, mj_data,
             frequency=1.0 / plan_dt, max_steps=args.steps,
+            # Offscreen: no viewer needed, unlike run_interactive's path.
+            record_dir=out_dir if args.record else None,
+            record_name=name(),
+            show_plans=args.show_plans,
         )
-        base = _base_name(args.robot, "admm")
-        save_run_results(
-            os.path.join(ROOT, "results"),
-            base,
+        save_run_metrics(
+            results_dir,
+            name,
             hyperparameters=dict(
                 robot=args.robot,
                 steps=args.steps,
@@ -350,9 +356,28 @@ if args.algorithm == "admm":
             ),
             log=log,
         )
-        out_dir = os.path.join(ROOT, "recordings")
-        os.makedirs(out_dir, exist_ok=True)
-        plot_run(log, os.path.join(out_dir, f"{base}.png"))
+        save_run_states(
+            results_dir,
+            name,
+            task,
+            log,
+            extra_static=dict(
+                robot=args.robot,
+                sim_timestep=float(mj_model.opt.timestep),
+                # So a logged qpos/qvel row can be mapped back onto the
+                # model without re-deriving the layout, which differs
+                # between the two embodiments.
+                qpos_size=int(mj_model.nq),
+                qvel_size=int(mj_model.nv),
+                block_qpos_adr=(
+                    task.block_qpos_adr
+                    if args.robot == "xarm6"
+                    else [0, 1, 2]
+                ),
+                block_dof_adr=task.block_dofs,
+            ),
+        )
+        plot_run(log, os.path.join(out_dir, f"{name()}.png"))
     else:
         run_interactive(
             ctrl,
@@ -362,6 +387,7 @@ if args.algorithm == "admm":
             show_traces=False,
             record_video=args.record,
             recording_prefix=f"pusht3d_{args.robot}_admm",
+            show_plans=args.show_plans,
         )
 else:
     # Plain (non-ADMM) MPC against the basic reach-and-touch running_cost.

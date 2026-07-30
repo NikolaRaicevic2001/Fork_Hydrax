@@ -26,7 +26,6 @@ the formulation rather than MJX.
 import argparse
 import os
 from contextlib import nullcontext
-from datetime import datetime
 
 import jax
 import jax.numpy as jnp
@@ -43,7 +42,7 @@ from oim.sim2d import (
     list_scenarios,
     run_2d,
 )
-from oim.utils.results import save_run_results
+from oim.utils.results import RunName, save_run_metrics, save_run_states
 
 # XLA's GPU command buffers (CUDA graphs) leak across ~200 iterations of
 # this closed loop and hit RESOURCE_EXHAUSTED; disabling them is XLA's own
@@ -107,18 +106,6 @@ def _draw_scene(ax, scenario: Scenario, verts: np.ndarray) -> None:  # noqa: ANN
     ax.set_ylim(scenario.view[2], scenario.view[3])
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
-
-
-def _base_name(scenario_name: str, method: str) -> str:
-    """`pusht2d_{scenario}_{method}_{timestamp}`, no extension.
-
-    Same scheme `examples/pusht.py` uses
-    (`pusht3d_{robot}_{method}_{timestamp}`), computed once and reused for
-    every output of one run (plot/gif/results), so they pair up under the
-    same timestamp instead of each getting its own.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"pusht2d_{scenario_name}_{method}_{timestamp}"
 
 
 def plot_run(
@@ -311,10 +298,11 @@ def main() -> None:
     pct = 100 * (1 - d1 / d0) if d0 > 0 else 0.0
     print(f"position error {d0:.4f} -> {d1:.4f}  ({pct:.1f}% closer)")
 
-    base = _base_name(scenario.name, "admm")
-    save_run_results(
-        os.path.join(ROOT, "results"),
-        base,
+    name = RunName("pusht2d", scenario.name, "admm")
+    results_dir = os.path.join(ROOT, "results")
+    save_run_metrics(
+        results_dir,
+        name,
         hyperparameters=dict(
             env=scenario.name,
             steps=args.steps,
@@ -329,14 +317,26 @@ def main() -> None:
         ),
         log=log,
     )
+    save_run_states(
+        results_dir,
+        name,
+        task,
+        log,
+        extra_static=dict(
+            scenario=scenario.name,
+            robot="disc",
+            robot_radius=float(task.model.robot_radius),
+            robot_max_speed=float(task.u_max[0]),
+        ),
+    )
 
     if not args.no_plot:
         out_dir = os.path.join(ROOT, "recordings")
         os.makedirs(out_dir, exist_ok=True)
-        plot_run(task, scenario, log, os.path.join(out_dir, f"{base}.png"))
+        plot_run(task, scenario, log, os.path.join(out_dir, f"{name()}.png"))
         if args.animate:
             save_animation(
-                task, scenario, log, os.path.join(out_dir, f"{base}.gif")
+                task, scenario, log, os.path.join(out_dir, f"{name()}.gif")
             )
 
 

@@ -10,6 +10,7 @@ import numpy as np
 
 from oim import ROOT
 from oim.alg_base import SamplingBasedController
+from oim.sim3d.plan_overlay import PlanOverlay
 from oim.utils.video import VideoRecorder
 
 """
@@ -33,6 +34,7 @@ def run_interactive(  # noqa: PLR0912, PLR0915
     reference_fps: float = 30.0,
     record_video: bool = False,
     recording_prefix: str = "simulation",
+    show_plans: bool = False,
 ) -> None:
     """Run an interactive simulation with the MPC controller.
 
@@ -64,7 +66,20 @@ def run_interactive(  # noqa: PLR0912, PLR0915
             timestamp. Defaults to "simulation" for callers that don't
             care; pass something identifying the task and method for a
             more informative filename.
+        show_plans: Overlay both ADMM blocks' predicted object trajectories
+            (see `oim.sim3d.plan_overlay`). Requires a controller exposing
+            `nominal_plans`, i.e. `ADMM`. Off by default: when off, nothing
+            here runs at all, so it cannot affect timing.
+
+    Raises:
+        TypeError: If `show_plans` is set for a controller that cannot
+            produce plans.
     """
+    if show_plans and not hasattr(controller, "nominal_plans"):
+        raise TypeError(
+            f"show_plans needs a controller with nominal_plans(); "
+            f"{type(controller).__name__} has none (only ADMM does)."
+        )
     # Report the planning horizon in seconds for debugging
     print(
         f"Planning with {controller.ctrl_steps} steps "
@@ -167,6 +182,15 @@ def run_interactive(  # noqa: PLR0912, PLR0915
                 )
                 viewer.user_scn.ngeom += 1
 
+        # Give the overlay a fixed slot after the traces', so the two claim
+        # disjoint geoms and can be shown together. user_scn persists
+        # between frames, so the slot is reserved once here.
+        overlay = None
+        if show_plans:
+            overlay = PlanOverlay(horizon=controller.ctrl_steps)
+            overlay_base = viewer.user_scn.ngeom
+            jit_plans = jax.jit(controller.nominal_plans)
+
         # Add geometry for the ghost reference
         if reference is not None:
             mujoco.mjv_addGeoms(
@@ -204,6 +228,19 @@ def run_interactive(  # noqa: PLR0912, PLR0915
                                 rollouts.trace_sites[i, j + 1, k],
                             )
                             ii += 1
+
+            # Overlay the two blocks' predicted object trajectories
+            if overlay is not None:
+                object_plan, robot_plan = jit_plans(mjx_data, policy_params)
+                overlay.draw(
+                    viewer.user_scn,
+                    np.asarray(
+                        controller.task.object_state_from_robot(mjx_data)
+                    ),
+                    np.asarray(object_plan),
+                    np.asarray(robot_plan),
+                    base=overlay_base,
+                )
 
             # Update the ghost reference
             if reference is not None:

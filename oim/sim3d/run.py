@@ -4,13 +4,18 @@ The 3D counterpart of `oim.sim2d.run.run_2d`: steps the real `mujoco.MjData`
 and the MJX planning model in lockstep, returning the same kind of log dict
 `run_2d` does (trajectories, wrenches, primal/dual residuals, goal errors),
 for `oim.tasks.pusht.PushT` under either `robot` embodiment. Headless -- no
-viewer, no recording -- reuses `oim.sim3d.deterministic.run_interactive`'s
-stepping logic, but that function is generic over any controller/task and
-has no way to return a log, which is what this fills in for the ADMM+PushT
-case specifically.
+viewer -- reuses `oim.sim3d.deterministic.run_interactive`'s stepping logic,
+but that function is generic over any controller/task and has no way to
+return a log, which is what this fills in for the ADMM+PushT case
+specifically.
+
+Video is still available headless (`record_dir`/`record_name`):
+`run_interactive` only needs the viewer for its *camera*, since frames come
+from an offscreen `mujoco.Renderer` either way. Here that camera is
+constructed directly, so no display is involved.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +25,140 @@ from mujoco import mjx
 
 from oim.algs.admm import ADMM
 from oim.objects import wrap_angle
+from oim.sim3d.plan_overlay import PlanOverlay
 from oim.tasks.pusht import PushT
+from oim.utils.video import VideoRecorder
+
+
+class _OffscreenRecorder:
+    """Renders `mujoco.MjData` to an mp4 with no viewer and no display.
+
+    Frames are strided so playback is real time: the simulator produces
+    `1/timestep` frames per simulated second (100 at the push-T timestep),
+    far more than a video needs, so every `stride`-th one is kept and the
+    encoder is told the matching frame rate. Recording a frame per physics
+    step and encoding at the *replanning* rate -- which is what
+    `run_interactive` does -- yields a video that plays back
+    `sim_steps_per_replan` times slower than reality.
+    """
+
+    def __init__(
+        self,
+        mj_model: mujoco.MjModel,
+        output_dir: str,
+        base_name: str,
+        target_fps: float,
+        size: Tuple[int, int],
+        camera: Optional[Union[str, int]],
+        overlay: Optional[PlanOverlay] = None,
+    ) -> None:
+        """Set up the offscreen renderer and start the encoder.
+
+        Args:
+            mj_model: The execution model to render.
+            output_dir: Directory for the mp4.
+            base_name: Filename stem, shared with the run's plot/results.
+            target_fps: Desired playback frame rate; the achieved rate is
+                the nearest one an integer stride allows.
+            size: (width, height) in pixels.
+            camera: Model camera name or id. None uses the default free
+                camera, which frames the whole scene.
+            overlay: If given, the ADMM plan overlay to composite into every
+                frame. Feed it with `set_plans` once per control step.
+
+        Raises:
+            RuntimeError: If no OpenGL backend is available.
+        """
+        width, height = size
+        step_fps = 1.0 / mj_model.opt.timestep
+        self.stride = max(1, round(step_fps / target_fps))
+        self._i = 0
+
+        # Must be set before the Renderer allocates its buffer.
+        mj_model.vis.global_.offwidth = max(
+            width, mj_model.vis.global_.offwidth
+        )
+        mj_model.vis.global_.offheight = max(
+            height, mj_model.vis.global_.offheight
+        )
+        try:
+            self.renderer = mujoco.Renderer(
+                mj_model, height=height, width=width
+            )
+        except Exception as e:  # no GL context available
+            raise RuntimeError(
+                f"Could not create an offscreen renderer ({e}). On a machine "
+                "with no display, set MUJOCO_GL=egl (or osmesa for software "
+                "rendering) before running."
+            ) from e
+
+        self.camera = mujoco.MjvCamera()
+        if camera is None:
+            mujoco.mjv_defaultFreeCamera(mj_model, self.camera)
+        else:
+            self.camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            self.camera.fixedcamid = (
+                camera
+                if isinstance(camera, int)
+                else mujoco.mj_name2id(
+                    mj_model, mujoco.mjtObj.mjOBJ_CAMERA, camera
+                )
+            )
+            if self.camera.fixedcamid < 0:
+                raise ValueError(f"No camera named {camera!r} in the model")
+
+        self.recorder = VideoRecorder(
+            output_dir=output_dir,
+            width=width,
+            height=height,
+            fps=step_fps / self.stride,
+            filename=base_name,
+        )
+        self.active = self.recorder.start()
+        self.overlay = overlay
+        self._plans: Optional[Tuple[np.ndarray, ...]] = None
+
+    def set_plans(
+        self,
+        current_pose: np.ndarray,
+        object_plan: np.ndarray,
+        robot_plan: np.ndarray,
+    ) -> None:
+        """Hold the plans to composite into subsequent frames.
+
+        Called once per control step, while frames are captured once per
+        physics step -- so the same plans are drawn across the substeps they
+        were computed for, which is exactly their period of validity. The
+        anchor pose is the one the plans were computed from, not the live
+        one, so the curves stay pinned to the state that produced them and
+        any drift away from the block over a step is real tracking error
+        rather than a drawing artifact.
+        """
+        self._plans = (
+            np.asarray(current_pose),
+            np.asarray(object_plan),
+            np.asarray(robot_plan),
+        )
+
+    def capture(self, mj_data: mujoco.MjData) -> None:
+        """Render and encode one frame, if this physics step is on-stride."""
+        on_stride = self._i % self.stride == 0
+        self._i += 1
+        if not (self.active and on_stride):
+            return
+        self.renderer.update_scene(mj_data, self.camera)
+        # After update_scene, not before: it rebuilds the scene from the
+        # model and resets ngeom, discarding anything added earlier.
+        if self.overlay is not None and self._plans is not None:
+            self.overlay.draw(self.renderer.scene, *self._plans)
+        self.recorder.add_frame(self.renderer.render().tobytes())
+
+    def close(self) -> None:
+        """Finalize the mp4 and release the GL context."""
+        if self.active:
+            self.recorder.stop()
+            self.active = False
+        self.renderer.close()
 
 
 def run_3d_admm(
@@ -31,9 +169,15 @@ def run_3d_admm(
     mj_data: mujoco.MjData,
     frequency: float,
     max_steps: int = 200,
-    goal_pos_tol: float = 0.06,
-    goal_theta_tol: float = 0.10,
+    goal_pos_tol: float = 0.05,
+    goal_theta_tol: float = 0.05,
     verbose: bool = True,
+    record_dir: Optional[str] = None,
+    record_name: Optional[str] = None,
+    video_fps: float = 30.0,
+    video_size: Tuple[int, int] = (720, 480),
+    camera: Optional[Union[str, int]] = None,
+    show_plans: bool = False,
 ) -> Dict[str, Any]:
     """Run the MJX closed loop under ADMM and return a log, headless.
 
@@ -48,11 +192,113 @@ def run_3d_admm(
         goal_pos_tol: Positional tolerance for declaring success.
         goal_theta_tol: Angular tolerance for declaring success.
         verbose: Whether to print progress.
+        record_dir: Directory for an mp4. None disables recording.
+        record_name: Filename stem for the mp4, no extension -- pass the
+            same base name used for the run's plot and results JSON.
+            Required when `record_dir` is given.
+        video_fps: Target playback frame rate.
+        video_size: (width, height) of the video in pixels.
+        camera: Model camera name or id to render from. None uses the
+            default free camera, which frames the whole scene.
+        show_plans: Composite both ADMM blocks' predicted object
+            trajectories into the recorded frames, as the live viewer's
+            `show_plans` does. Also logs the two plans per step, so the
+            comparison survives into the states file and can be re-examined
+            without the video. Needs `record_dir` to be of any visual use,
+            but the logging happens either way.
 
     Returns:
         A dict with the block/pusher trajectories, per-step wrenches,
         primal/dual residuals, goal errors, and whether the goal was reached.
+
+    Raises:
+        ValueError: If `record_dir` is given without `record_name`.
     """
+    overlay = PlanOverlay(horizon=ctrl.ctrl_steps) if show_plans else None
+    recorder = None
+    if record_dir is not None:
+        if record_name is None:
+            raise ValueError("record_dir requires record_name")
+        recorder = _OffscreenRecorder(
+            mj_model,
+            output_dir=record_dir,
+            base_name=record_name,
+            target_fps=video_fps,
+            size=video_size,
+            camera=camera,
+            overlay=overlay,
+        )
+    try:
+        return _run(
+            task,
+            ctrl,
+            params,
+            mj_model,
+            mj_data,
+            frequency,
+            max_steps,
+            goal_pos_tol,
+            goal_theta_tol,
+            verbose,
+            recorder,
+            show_plans,
+        )
+    finally:
+        if recorder is not None:
+            recorder.close()
+
+
+def _init_log(
+    task: PushT,
+    mj_data: mujoco.MjData,
+    mjx_data: mjx.Data,
+    show_plans: bool,
+) -> Dict[str, Any]:
+    """Seed the log with the initial state and empty per-step series.
+
+    Key names match `run_2d`'s so the two worlds' state logs line up entry
+    for entry. qpos/qvel are the full MuJoCo state, kept so a run can be
+    resumed or replayed exactly, not just plotted.
+    """
+    log: Dict[str, Any] = {
+        "time": [float(mj_data.time)],
+        "object_pose": [np.array(task._block_pose(mjx_data))],
+        "object_velocity": [np.array(mjx_data.qvel[task.block_dofs])],
+        "robot_pos": [np.array(task._pusher_pos(mjx_data))],
+        "qpos": [np.array(mj_data.qpos)],
+        "qvel": [np.array(mj_data.qvel)],
+        "robot_control": [],
+        "wrench": [],
+        "wrench_consensus": [],
+        "primal_residual": [],
+        "dual_residual": [],
+        "rho": [],
+        "pos_err": [],
+        "theta_err": [],
+    }
+    if show_plans:
+        # Only allocated when asked for: (H, 3) per block per step is a
+        # different order of magnitude from the rest of the log.
+        log["object_plan"] = []
+        log["robot_plan"] = []
+    return log
+
+
+def _run(
+    task: PushT,
+    ctrl: ADMM,
+    params: Any,
+    mj_model: mujoco.MjModel,
+    mj_data: mujoco.MjData,
+    frequency: float,
+    max_steps: int,
+    goal_pos_tol: float,
+    goal_theta_tol: float,
+    verbose: bool,
+    recorder: Optional[_OffscreenRecorder],
+    show_plans: bool,
+) -> Dict[str, Any]:
+    """The closed loop itself; see `run_3d_admm` for the arguments."""
     replan_period = 1.0 / frequency
     sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
 
@@ -69,16 +315,8 @@ def run_3d_admm(
     jit_optimize = jax.jit(ctrl.optimize)
     jit_interp_func = jax.jit(ctrl.interp_func)
 
-    log: Dict[str, Any] = {
-        "block_pose": [np.array(task._block_pose(mjx_data))],
-        "pusher_pos": [np.array(task._pusher_pos(mjx_data))],
-        "wrench": [],
-        "primal_residual": [],
-        "dual_residual": [],
-        "rho": [],
-        "pos_err": [],
-        "theta_err": [],
-    }
+    log = _init_log(task, mj_data, mjx_data, show_plans)
+    jit_plans = jax.jit(ctrl.nominal_plans) if show_plans else None
     reached = False
 
     for step in range(max_steps):
@@ -91,6 +329,19 @@ def run_3d_admm(
         )
         params, _ = jit_optimize(mjx_data, params)
 
+        # After optimize (the plans come from the params it just produced)
+        # and before the substep loop (the recorder draws them into every
+        # frame of the step they belong to).
+        if jit_plans is not None:
+            object_plan, robot_plan = jit_plans(mjx_data, params)
+            object_plan = np.asarray(object_plan)
+            robot_plan = np.asarray(robot_plan)
+            plan_anchor = np.asarray(task.object_state_from_robot(mjx_data))
+            log["object_plan"].append(object_plan)
+            log["robot_plan"].append(robot_plan)
+            if recorder is not None:
+                recorder.set_plans(plan_anchor, object_plan, robot_plan)
+
         tq = (
             jnp.arange(sim_steps_per_replan) * mj_model.opt.timestep
             + mj_data.time
@@ -101,14 +352,10 @@ def run_3d_admm(
         for i in range(sim_steps_per_replan):
             mj_data.ctrl[:] = us[i]
             mujoco.mj_step(mj_model, mj_data)
+            if recorder is not None:
+                recorder.capture(mj_data)
 
-        block_pose = np.array(task._block_pose(mj_data))
-        log["block_pose"].append(block_pose)
-        log["pusher_pos"].append(np.array(task._pusher_pos(mj_data)))
-        log["wrench"].append(np.array(task.realized_consensus(mj_data)))
-        log["primal_residual"].append(float(params.primal_residual))
-        log["dual_residual"].append(float(params.dual_residual))
-        log["rho"].append(float(params.rho))
+        block_pose = _log_step(log, task, mj_data, params, us)
 
         goal = np.asarray(task.goal)
         pos_err = float(np.linalg.norm(block_pose[:2] - goal[:2]))
@@ -129,10 +376,66 @@ def run_3d_admm(
                 print(f"goal reached at step {step}")
             break
 
+    return _finalize_log(log, task, reached, show_plans)
+
+
+def _log_step(
+    log: Dict[str, Any],
+    task: PushT,
+    mj_data: mujoco.MjData,
+    params: Any,
+    us: np.ndarray,
+) -> np.ndarray:
+    """Append one control step's state and diagnostics; return the pose."""
+    block_pose = np.array(task._block_pose(mj_data))
+    log["time"].append(float(mj_data.time))
+    log["object_pose"].append(block_pose)
+    log["object_velocity"].append(np.array(mj_data.qvel[task.block_dofs]))
+    log["robot_pos"].append(np.array(task._pusher_pos(mj_data)))
+    log["qpos"].append(np.array(mj_data.qpos))
+    log["qvel"].append(np.array(mj_data.qvel))
+    log["robot_control"].append(np.array(us[-1]))
+    log["wrench"].append(np.array(task.realized_consensus(mj_data)))
+    log["wrench_consensus"].append(np.array(params.z[0]))
+    log["primal_residual"].append(float(params.primal_residual))
+    log["dual_residual"].append(float(params.dual_residual))
+    log["rho"].append(float(params.rho))
+    return block_pose
+
+
+def _finalize_log(
+    log: Dict[str, Any], task: PushT, reached: bool, show_plans: bool
+) -> Dict[str, Any]:
+    """Stack the per-step lists into arrays and derive robot velocity."""
     log["reached"] = reached
-    log["block_pose"] = np.array(log["block_pose"])
-    log["pusher_pos"] = np.array(log["pusher_pos"])
+    for key in (
+        "time",
+        "object_pose",
+        "object_velocity",
+        "robot_pos",
+        "qpos",
+        "qvel",
+        "robot_control",
+        "wrench_consensus",
+        *(("object_plan", "robot_plan") if show_plans else ()),
+    ):
+        log[key] = np.array(log[key])
     log["wrench"] = (
         np.array(log["wrench"]) if log["wrench"] else np.zeros((0, 3))
     )
+    # Realized world-frame velocity of the contact point, by difference --
+    # the arm's tip has no qvel entry of its own, and this is the quantity
+    # the 2D world reports, so the two logs stay comparable.
+    log["robot_vel"] = _finite_difference(log["robot_pos"], task.dt)
     return log
+
+
+def _finite_difference(series: np.ndarray, dt: float) -> np.ndarray:
+    """Per-step velocity of a logged position series, same length as it.
+
+    The first entry is zero (nothing precedes it); entry `i` thereafter is
+    the average velocity over the step that produced it.
+    """
+    if len(series) < 2:
+        return np.zeros_like(series)
+    return np.vstack([np.zeros_like(series[:1]), np.diff(series, axis=0) / dt])

@@ -151,10 +151,12 @@ def run_2d(
 
     state = task.make_data(object_pose=object_pose0, robot_pos=robot_pos0)
     log: Dict[str, Any] = {
+        "time": [float(state.time)],
         "object_pose": [np.asarray(state.object_pose)],
         "robot_pos": [np.asarray(state.robot_pos)],
+        "robot_control": [],
         "wrench": [],
-        "w_obj": [],
+        "wrench_consensus": [],
         "primal_residual": [],
         "dual_residual": [],
         "rho": [],
@@ -169,10 +171,12 @@ def run_2d(
         u = jnp.clip(u, task.u_min, task.u_max)
         state = task.rollout.step(task.sim_model, state, u)
 
+        log["time"].append(float(state.time))
         log["object_pose"].append(np.asarray(state.object_pose))
         log["robot_pos"].append(np.asarray(state.robot_pos))
+        log["robot_control"].append(np.asarray(u))
         log["wrench"].append(np.asarray(state.wrench))
-        log["w_obj"].append(np.asarray(params.z))
+        log["wrench_consensus"].append(np.asarray(params.z[0]))
         log["primal_residual"].append(float(params.primal_residual))
         log["dual_residual"].append(float(params.dual_residual))
         log["rho"].append(float(params.rho))
@@ -199,9 +203,47 @@ def run_2d(
             break
 
     log["reached"] = reached
-    log["object_pose"] = np.array(log["object_pose"])
-    log["robot_pos"] = np.array(log["robot_pos"])
+    for key in (
+        "time",
+        "object_pose",
+        "robot_pos",
+        "robot_control",
+        "wrench_consensus",
+    ):
+        log[key] = np.array(log[key])
     log["wrench"] = (
         np.array(log["wrench"]) if log["wrench"] else np.zeros((0, 3))
     )
+    # Velocities by difference. Exact rather than approximate here: the
+    # engine integrates pose with forward Euler over the step, so the
+    # difference quotient *is* the velocity it applied. MJX reports the
+    # object twist directly, but the same quantity, so the two worlds'
+    # state logs stay comparable.
+    log["object_velocity"] = _finite_difference(
+        log["object_pose"], task.dt, angle_col=2
+    )
+    log["robot_vel"] = _finite_difference(log["robot_pos"], task.dt)
     return log
+
+
+def _finite_difference(
+    series: np.ndarray, dt: float, angle_col: Optional[int] = None
+) -> np.ndarray:
+    """Per-step velocity of a logged series, same length as the series.
+
+    Args:
+        series: Positions over time, shape (steps, dim).
+        dt: The control timestep.
+        angle_col: Index of a column holding an angle, if any. Its
+            differences are wrapped to (-pi, pi] so a crossing does not
+            register as a ~2*pi/dt spike.
+
+    Returns:
+        Velocities, with a leading zero row since nothing precedes step 0.
+    """
+    if len(series) < 2:
+        return np.zeros_like(series)
+    deltas = np.diff(series, axis=0)
+    if angle_col is not None:
+        deltas[:, angle_col] = np.asarray(wrap_angle(deltas[:, angle_col]))
+    return np.vstack([np.zeros_like(series[:1]), deltas / dt])

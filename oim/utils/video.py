@@ -3,6 +3,7 @@
 import os
 import subprocess
 from datetime import datetime
+from typing import Optional
 
 
 class VideoRecorder:
@@ -15,6 +16,7 @@ class VideoRecorder:
         height: int = 480,
         fps: float = 30.0,
         prefix: str = "simulation",
+        filename: Optional[str] = None,
     ):
         """Initialize the video recorder.
 
@@ -27,12 +29,17 @@ class VideoRecorder:
                 "simulation" (the original, task-agnostic name) so existing
                 callers are unaffected; pass e.g. "pusht3d_xarm6_admm" for a
                 name that identifies the task and method too.
+            filename: Exact base name (no extension), used verbatim instead
+                of `{prefix}_{timestamp}`. Pass the base name already
+                computed for a run's plot and results JSON so all three
+                files share one timestamp rather than each stamping its own.
         """
         self.output_dir = output_dir
         self.width = width
         self.height = height
         self.fps = fps
         self.prefix = prefix
+        self.filename = filename
 
         self.ffmpeg_process = None
         self.video_path = None
@@ -52,11 +59,12 @@ class VideoRecorder:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
-        # Generate output path with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.video_path = os.path.join(
-            self.output_dir, f"{self.prefix}_{timestamp}.mp4"
-        )
+        # Use the caller's exact base name if given, else stamp our own.
+        if self.filename is not None:
+            base = self.filename
+        else:
+            base = f"{self.prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+        self.video_path = os.path.join(self.output_dir, f"{base}.mp4")
 
         # Check if FFmpeg is available
         try:
