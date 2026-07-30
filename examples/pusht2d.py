@@ -43,6 +43,7 @@ from oim.sim2d import (
     list_scenarios,
     run_2d,
 )
+from oim.utils.results import save_run_results
 
 # XLA's GPU command buffers (CUDA graphs) leak across ~200 iterations of
 # this closed loop and hit RESOURCE_EXHAUSTED; disabling them is XLA's own
@@ -108,15 +109,16 @@ def _draw_scene(ax, scenario: Scenario, verts: np.ndarray) -> None:  # noqa: ANN
     ax.grid(alpha=0.3)
 
 
-def _recording_name(scenario_name: str, method: str, ext: str) -> str:
-    """`pusht2d_{scenario}_{method}_{timestamp}.{ext}`.
+def _base_name(scenario_name: str, method: str) -> str:
+    """`pusht2d_{scenario}_{method}_{timestamp}`, no extension.
 
     Same scheme `examples/pusht.py` uses
-    (`pusht3d_{robot}_{method}_{timestamp}`), so 2D and 3D recordings are
-    named consistently.
+    (`pusht3d_{robot}_{method}_{timestamp}`), computed once and reused for
+    every output of one run (plot/gif/results), so they pair up under the
+    same timestamp instead of each getting its own.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"pusht2d_{scenario_name}_{method}_{timestamp}.{ext}"
+    return f"pusht2d_{scenario_name}_{method}_{timestamp}"
 
 
 def plot_run(
@@ -309,19 +311,32 @@ def main() -> None:
     pct = 100 * (1 - d1 / d0) if d0 > 0 else 0.0
     print(f"position error {d0:.4f} -> {d1:.4f}  ({pct:.1f}% closer)")
 
+    base = _base_name(scenario.name, "admm")
+    save_run_results(
+        os.path.join(ROOT, "results"),
+        base,
+        hyperparameters=dict(
+            env=scenario.name,
+            steps=args.steps,
+            n_admm=args.n_admm,
+            samples=args.samples,
+            horizon=args.horizon,
+            rho=args.rho,
+            gamma=args.gamma,
+            seed=args.seed,
+            contact_action=args.contact_action,
+            relocate_contact=not args.no_relocate,
+        ),
+        log=log,
+    )
+
     if not args.no_plot:
         out_dir = os.path.join(ROOT, "recordings")
         os.makedirs(out_dir, exist_ok=True)
-        name = _recording_name(scenario.name, "admm", "png")
-        plot_run(task, scenario, log, os.path.join(out_dir, name))
+        plot_run(task, scenario, log, os.path.join(out_dir, f"{base}.png"))
         if args.animate:
             save_animation(
-                task,
-                scenario,
-                log,
-                os.path.join(
-                    out_dir, _recording_name(scenario.name, "admm", "gif")
-                ),
+                task, scenario, log, os.path.join(out_dir, f"{base}.gif")
             )
 
 

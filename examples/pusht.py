@@ -21,21 +21,23 @@ from oim.objects import Box, Circle, Polygon, rotate, t_shape_footprint
 from oim.sim3d.deterministic import run_interactive
 from oim.sim3d.run import run_3d_admm
 from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
+from oim.utils.results import save_run_results
 
 """
 Run an interactive simulation of the push-T task.
 """
 
 
-def _recording_name(robot: str, method: str, ext: str) -> str:
-    """`pusht3d_{robot}_{method}_{timestamp}.{ext}`.
+def _base_name(robot: str, method: str) -> str:
+    """`pusht3d_{robot}_{method}_{timestamp}`, no extension.
 
     Same scheme `examples/pusht2d.py` uses
-    (`pusht2d_{scenario}_{method}_{timestamp}`), so 2D and 3D recordings
-    are named consistently.
+    (`pusht2d_{scenario}_{method}_{timestamp}`), computed once and reused
+    for every output of one run (plot/results), so they pair up under the
+    same timestamp instead of each getting its own.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"pusht3d_{robot}_{method}_{timestamp}.{ext}"
+    return f"pusht3d_{robot}_{method}_{timestamp}"
 
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
@@ -325,10 +327,25 @@ if args.algorithm == "admm":
             task, ctrl, ctrl.init_params(seed=args.seed), mj_model, mj_data,
             frequency=1.0 / plan_dt, max_steps=args.steps,
         )
+        base = _base_name(args.robot, "admm")
+        save_run_results(
+            os.path.join(ROOT, "results"),
+            base,
+            hyperparameters=dict(
+                robot=args.robot,
+                steps=args.steps,
+                n_admm=args.n_admm,
+                robot_opt=args.robot_opt,
+                object_opt=args.object_opt,
+                rho=args.rho,
+                gamma=args.gamma,
+                seed=args.seed,
+            ),
+            log=log,
+        )
         out_dir = os.path.join(ROOT, "recordings")
         os.makedirs(out_dir, exist_ok=True)
-        name = _recording_name(args.robot, "admm", "png")
-        plot_run(log, os.path.join(out_dir, name))
+        plot_run(log, os.path.join(out_dir, f"{base}.png"))
     else:
         run_interactive(
             ctrl,
