@@ -26,6 +26,7 @@ the formulation rather than MJX.
 import argparse
 import os
 from contextlib import nullcontext
+from datetime import datetime
 
 import jax
 import jax.numpy as jnp
@@ -105,6 +106,17 @@ def _draw_scene(ax, scenario: Scenario, verts: np.ndarray) -> None:  # noqa: ANN
     ax.set_ylim(scenario.view[2], scenario.view[3])
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
+
+
+def _recording_name(scenario_name: str, method: str, ext: str) -> str:
+    """`pusht2d_{scenario}_{method}_{timestamp}.{ext}`.
+
+    Same scheme `examples/pusht.py` uses
+    (`pusht3d_{robot}_{method}_{timestamp}`), so 2D and 3D recordings are
+    named consistently.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"pusht2d_{scenario_name}_{method}_{timestamp}.{ext}"
 
 
 def plot_run(
@@ -300,18 +312,16 @@ def main() -> None:
     if not args.no_plot:
         out_dir = os.path.join(ROOT, "recordings")
         os.makedirs(out_dir, exist_ok=True)
-        plot_run(
-            task,
-            scenario,
-            log,
-            os.path.join(out_dir, f"pusht2d_{scenario.name}.png"),
-        )
+        name = _recording_name(scenario.name, "admm", "png")
+        plot_run(task, scenario, log, os.path.join(out_dir, name))
         if args.animate:
             save_animation(
                 task,
                 scenario,
                 log,
-                os.path.join(out_dir, f"pusht2d_{scenario.name}.gif"),
+                os.path.join(
+                    out_dir, _recording_name(scenario.name, "admm", "gif")
+                ),
             )
 
 

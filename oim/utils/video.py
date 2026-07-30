@@ -14,6 +14,7 @@ class VideoRecorder:
         width: int = 720,
         height: int = 480,
         fps: float = 30.0,
+        prefix: str = "simulation",
     ):
         """Initialize the video recorder.
 
@@ -22,11 +23,16 @@ class VideoRecorder:
             width: Width of the video in pixels.
             height: Height of the video in pixels.
             fps: Frames per second.
+            prefix: Filename prefix, before the timestamp. Defaults to
+                "simulation" (the original, task-agnostic name) so existing
+                callers are unaffected; pass e.g. "pusht3d_xarm6_admm" for a
+                name that identifies the task and method too.
         """
         self.output_dir = output_dir
         self.width = width
         self.height = height
         self.fps = fps
+        self.prefix = prefix
 
         self.ffmpeg_process = None
         self.video_path = None
@@ -49,7 +55,7 @@ class VideoRecorder:
         # Generate output path with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.video_path = os.path.join(
-            self.output_dir, f"simulation_{timestamp}.mp4"
+            self.output_dir, f"{self.prefix}_{timestamp}.mp4"
         )
 
         # Check if FFmpeg is available

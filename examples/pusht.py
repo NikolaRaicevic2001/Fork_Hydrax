@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 from copy import deepcopy
+from datetime import datetime
 
 import mujoco
 import numpy as np
@@ -24,6 +25,17 @@ from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
 """
 Run an interactive simulation of the push-T task.
 """
+
+
+def _recording_name(robot: str, method: str, ext: str) -> str:
+    """`pusht3d_{robot}_{method}_{timestamp}.{ext}`.
+
+    Same scheme `examples/pusht2d.py` uses
+    (`pusht2d_{scenario}_{method}_{timestamp}`), so 2D and 3D recordings
+    are named consistently.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"pusht3d_{robot}_{method}_{timestamp}.{ext}"
 
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
@@ -315,7 +327,8 @@ if args.algorithm == "admm":
         )
         out_dir = os.path.join(ROOT, "recordings")
         os.makedirs(out_dir, exist_ok=True)
-        plot_run(log, os.path.join(out_dir, f"pusht3d_{args.robot}_admm.png"))
+        name = _recording_name(args.robot, "admm", "png")
+        plot_run(log, os.path.join(out_dir, name))
     else:
         run_interactive(
             ctrl,
@@ -324,6 +337,7 @@ if args.algorithm == "admm":
             frequency=1.0 / plan_dt,
             show_traces=False,
             record_video=args.record,
+            recording_prefix=f"pusht3d_{args.robot}_admm",
         )
 else:
     # Plain (non-ADMM) MPC against the basic reach-and-touch running_cost.
@@ -392,4 +406,5 @@ else:
         frequency=50,
         show_traces=False,
         record_video=args.record,
+        recording_prefix=f"pusht3d_{args.robot}_{args.algorithm or 'ps'}",
     )

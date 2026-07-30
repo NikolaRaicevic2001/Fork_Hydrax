@@ -32,6 +32,7 @@ def run_interactive(  # noqa: PLR0912, PLR0915
     reference: np.ndarray = None,
     reference_fps: float = 30.0,
     record_video: bool = False,
+    recording_prefix: str = "simulation",
 ) -> None:
     """Run an interactive simulation with the MPC controller.
 
@@ -59,6 +60,10 @@ def run_interactive(  # noqa: PLR0912, PLR0915
         reference: The reference trajectory (qs) to visualize.
         reference_fps: The frame rate of the reference trajectory.
         record_video: Whether to record a video of the simulation.
+        recording_prefix: Filename prefix for the recording, before the
+            timestamp. Defaults to "simulation" for callers that don't
+            care; pass something identifying the task and method for a
+            more informative filename.
     """
     # Report the planning horizon in seconds for debugging
     print(
@@ -129,6 +134,7 @@ def run_interactive(  # noqa: PLR0912, PLR0915
             width=width,
             height=height,
             fps=actual_frequency,
+            prefix=recording_prefix,
         )
         # Ensure model visual offscreen buffer is compatible with video
         # recording
