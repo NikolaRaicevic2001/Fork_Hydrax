@@ -7,6 +7,7 @@ plain Python around jitted calls, you can drop a breakpoint anywhere, or
 wrap a call in `jax.disable_jit()` to step into the physics itself.
 """
 
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import jax
@@ -146,7 +147,8 @@ def run_2d(
 
     Returns:
         A dict with the object/robot trajectories, per-step wrenches,
-        primal/dual residuals, goal errors, and whether the goal was reached.
+        primal/dual residuals, goal errors, wall-clock compute time per
+        step, and whether the goal was reached.
     """
     optimize = jax.jit(ctrl.optimize) if jit else ctrl.optimize
     get_action = jax.jit(ctrl.get_action) if jit else ctrl.get_action
@@ -164,11 +166,15 @@ def run_2d(
         "rho": [],
         "pos_err": [],
         "theta_err": [],
+        "compute_time": [],
     }
     reached = False
 
     for step in range(max_steps):
+        t0 = time.perf_counter()
         params, _ = optimize(state, params)
+        jax.block_until_ready(params)
+        log["compute_time"].append(time.perf_counter() - t0)
         u = get_action(params, state.time)
         u = jnp.clip(u, task.u_min, task.u_max)
         state = task.rollout.step(task.sim_model, state, u)

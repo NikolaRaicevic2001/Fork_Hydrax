@@ -284,6 +284,7 @@ own indexing and conventions.
 | Open-loop trajectory optimization | [`oim/open_loop.py`](oim/open_loop.py), demo in [`examples/cart_pole_trajectory_optimization.py`](examples/cart_pole_trajectory_optimization.py) |
 | Asynchronous simulation — controller and simulator in separate processes, for a realistic picture of closed-loop latency | [`oim/sim3d/asynchronous.py`](oim/sim3d/asynchronous.py), demo in [`examples/cube_async.py`](examples/cube_async.py) |
 | Headless MJX ADMM driver, returning the same log dict as `run_2d` | [`oim/sim3d/run.py`](oim/sim3d/run.py) |
+| ADMM-vs-flat-baseline ablation — same task, same robot-level sampler budget, reports success rate / position error / frequency / execution time (the paper's own Sec. VI metrics) | [`oim/utils/metrics.py`](oim/utils/metrics.py), demo in [`examples/ablation_pusht.py`](examples/ablation_pusht.py), output in `oim/results/ablations/` |
 | Other demos from the base library (pendulum, cart-pole, humanoid standup and mocap, cube rotation, walker, crane, …) | [`examples/`](examples/) |
 
 ## Mathematical formulation
@@ -693,13 +694,15 @@ oim/
 │
 ├── sim3d/                MuJoCo drivers
 │   ├── deterministic.py  run_interactive: viewer, replanning, mp4 recording
-│   ├── run.py            run_3d_admm: headless, logs what run_2d logs
+│   ├── run.py            run_3d_admm: headless, logs what run_2d logs;
+│   │                       run_3d_plain: same, for any non-ADMM controller
 │   ├── plan_overlay.py   both blocks' predicted object paths, in the viewer
 │   └── asynchronous.py   controller and simulator in separate processes
 │
 ├── tasks/                MuJoCo tasks — pusht.py is the ADMM one
 ├── models/               MJCF scenes and meshes (xarm6, g1, pusht_clutter, …)
-└── utils/                spline interpolation, video recording, results JSON
+└── utils/                spline interpolation, video recording, results JSON,
+                            metrics.py (ADMM-vs-baseline comparison)
 ```
 
 ### How a control step propagates

@@ -196,6 +196,7 @@ def save_run_metrics(
         "rho": _jsonable(log["rho"]),
         "pos_err": _jsonable(log["pos_err"]),
         "theta_err": _jsonable(log["theta_err"]),
+        "compute_time": _jsonable(log["compute_time"]),
     }
     with open(path, "w") as f:
         json.dump(results, f, indent=2)

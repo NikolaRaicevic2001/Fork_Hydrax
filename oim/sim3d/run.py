@@ -13,8 +13,12 @@ Video is still available headless (`record_dir`/`record_name`):
 `run_interactive` only needs the viewer for its *camera*, since frames come
 from an offscreen `mujoco.Renderer` either way. Here that camera is
 constructed directly, so no display is involved.
+
+`run_3d_plain` is the flat-baseline counterpart, for any non-ADMM
+`SamplingBasedController` -- see `oim.utils.metrics` for comparing the two.
 """
 
+import time
 from typing import Any, Dict, Optional, Tuple, Union
 
 import jax
@@ -23,6 +27,7 @@ import mujoco
 import numpy as np
 from mujoco import mjx
 
+from oim.alg_base import SamplingBasedController
 from oim.algs.admm import ADMM
 from oim.objects import wrap_angle
 from oim.sim3d.plan_overlay import PlanOverlay
@@ -275,6 +280,7 @@ def _init_log(
         "rho": [],
         "pos_err": [],
         "theta_err": [],
+        "compute_time": [],
     }
     if show_plans:
         # Only allocated when asked for: (H, 3) per block per step is a
@@ -327,7 +333,10 @@ def _run(
             mocap_quat=jnp.array(mj_data.mocap_quat),
             time=mj_data.time,
         )
+        t0 = time.perf_counter()
         params, _ = jit_optimize(mjx_data, params)
+        jax.block_until_ready(params)
+        log["compute_time"].append(time.perf_counter() - t0)
 
         # After optimize (the plans come from the params it just produced)
         # and before the substep loop (the recorder draws them into every
@@ -439,3 +448,107 @@ def _finite_difference(series: np.ndarray, dt: float) -> np.ndarray:
     if len(series) < 2:
         return np.zeros_like(series)
     return np.vstack([np.zeros_like(series[:1]), np.diff(series, axis=0) / dt])
+
+
+def run_3d_plain(
+    task: PushT,
+    ctrl: SamplingBasedController,
+    params: Any,
+    mj_model: mujoco.MjModel,
+    mj_data: mujoco.MjData,
+    frequency: float,
+    max_steps: int = 200,
+    goal_pos_tol: float = 0.06,
+    goal_theta_tol: float = 0.10,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Run a plain (non-ADMM) controller headlessly and return a log.
+
+    The flat-baseline counterpart of `run_3d_admm`: same stepping and goal-
+    check logic, generic over any `SamplingBasedController` (e.g. `MPPI`,
+    `PredictiveSampling`) rather than requiring ADMM's residual/rho fields --
+    those controllers' params have no such thing. Built for `oim.utils.
+    metrics`'s ADMM-vs-baseline comparison, so it deliberately runs on the
+    same `task` (pass `PushT(clutter=True, ...)`, matching whatever the ADMM
+    side is being compared against) rather than `examples/pusht.py`'s plain
+    branch, which defaults to the uncluttered scene for `robot="point"`.
+
+    Args:
+        task: The `PushT` task (`robot="point"` or `"xarm6"`), ADMM not
+            required -- pass a task without `ConsensusTask` costs disabled.
+        ctrl: Any `SamplingBasedController` built against `task`.
+        params: Its initial policy parameters.
+        mj_model: The (fine-timestep) execution model.
+        mj_data: Its initial state.
+        frequency: Replanning frequency (Hz).
+        max_steps: Maximum control steps.
+        goal_pos_tol: Positional tolerance for declaring success.
+        goal_theta_tol: Angular tolerance for declaring success.
+        verbose: Whether to print progress.
+
+    Returns:
+        A dict with `pos_err`, `theta_err`, `compute_time` (one entry per
+        control step) and `reached` -- the common subset `oim.utils.
+        metrics.trial_metrics` needs, not the full state trajectory
+        `run_3d_admm` logs.
+    """
+    replan_period = 1.0 / frequency
+    sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
+    jit_optimize = jax.jit(ctrl.optimize)
+    jit_interp_func = jax.jit(ctrl.interp_func)
+
+    mjx_data = task.make_data()
+    mjx_data = mjx_data.replace(
+        qpos=mj_data.qpos,
+        qvel=mj_data.qvel,
+        mocap_pos=mj_data.mocap_pos,
+        mocap_quat=mj_data.mocap_quat,
+    )
+    mjx_data = mjx.forward(task.model, mjx_data)
+
+    log: Dict[str, Any] = {"pos_err": [], "theta_err": [], "compute_time": []}
+    reached = False
+    goal = np.asarray(task.goal)
+
+    for step in range(max_steps):
+        mjx_data = mjx_data.replace(
+            qpos=jnp.array(mj_data.qpos),
+            qvel=jnp.array(mj_data.qvel),
+            mocap_pos=jnp.array(mj_data.mocap_pos),
+            mocap_quat=jnp.array(mj_data.mocap_quat),
+            time=mj_data.time,
+        )
+        t0 = time.perf_counter()
+        params, _ = jit_optimize(mjx_data, params)
+        jax.block_until_ready(params)
+        log["compute_time"].append(time.perf_counter() - t0)
+
+        tq = (
+            jnp.arange(sim_steps_per_replan) * mj_model.opt.timestep
+            + mj_data.time
+        )
+        us = np.asarray(
+            jit_interp_func(tq, params.tk, params.mean[None, ...])
+        )[0]
+        for i in range(sim_steps_per_replan):
+            mj_data.ctrl[:] = us[i]
+            mujoco.mj_step(mj_model, mj_data)
+
+        block_pose = np.array(task._block_pose(mj_data))
+        pos_err = float(np.linalg.norm(block_pose[:2] - goal[:2]))
+        theta_err = float(abs(float(wrap_angle(block_pose[2] - goal[2]))))
+        log["pos_err"].append(pos_err)
+        log["theta_err"].append(theta_err)
+        if verbose and step % 10 == 0:
+            print(
+                f"step {step:4d}  pos_err={pos_err:.4f}  "
+                f"theta_err={theta_err:.4f}"
+            )
+        if pos_err < goal_pos_tol and theta_err < goal_theta_tol:
+            reached = True
+            if verbose:
+                print(f"goal reached at step {step}")
+            break
+
+    log["reached"] = reached
+    return log
