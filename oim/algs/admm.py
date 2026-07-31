@@ -742,6 +742,7 @@ class ADMM(SamplingBasedController):
         noise_min: float = 0.0,
         noise_kappa: float = 0.0,
         noise_max: Optional[float] = None,
+        consensus_relax: float = 1.0,
         rollout: Optional[RobotRollout] = None,
         debug_print: bool = True,
     ) -> None:
@@ -779,6 +780,14 @@ class ADMM(SamplingBasedController):
                 residual -> more noise). Defaults to `noise_min`, i.e.
                 annealing is inert (a constant noise floor) unless
                 explicitly raised.
+            consensus_relax: Damping on the consensus update, in (0, 1].
+                `z^{(l+1)} <- relax * z_update(...) + (1 - relax) * z^{(l)}`.
+                Each ADMM iteration re-solves a *stochastic* sub-optimizer
+                on both blocks, so `z_update`'s raw result carries fresh
+                sampling noise every iteration on top of any genuine
+                movement toward agreement; damping low-pass-filters that
+                noise out of the sequence `z^{(l)}` actually follows.
+                Defaults to `1.0` (no damping, the un-relaxed update).
             rollout: How the robot block advances its state one step.
                 Defaults to `MJXRollout` (a MuJoCo MJX scene); pass
                 `oim.sim2d.Analytic2DRollout` to drive the 2D world with
@@ -791,6 +800,8 @@ class ADMM(SamplingBasedController):
         """
         if n_admm < 1:
             raise ValueError("n_admm must be at least 1")
+        if not 0.0 < consensus_relax <= 1.0:
+            raise ValueError("consensus_relax must be in (0, 1]")
         if robot_optimizer.ctrl_steps != object_optimizer.num_knots:
             raise ValueError(
                 "robot_optimizer.ctrl_steps must equal object_optimizer."
@@ -809,6 +820,7 @@ class ADMM(SamplingBasedController):
         self.noise_min = noise_min
         self.noise_kappa = noise_kappa
         self.noise_max = noise_min if noise_max is None else noise_max
+        self.consensus_relax = consensus_relax
         self.debug_print = debug_print
 
         self.object_subproblem = ObjectSubproblem(
@@ -937,8 +949,17 @@ class ADMM(SamplingBasedController):
             state, robot_params
         )
 
-        z_new = self.consensus.z_update(
+        z_raw = self.consensus.z_update(
             w_obj, w_rob, carry.gamma_o, carry.gamma_r
+        )
+        # Damp against per-iteration sampling noise from the two stochastic
+        # sub-optimizers (see `consensus_relax`'s docstring); inert at the
+        # default 1.0.
+        z_new = (
+            z_raw
+            if self.consensus_relax == 1.0
+            else self.consensus_relax * z_raw
+            + (1.0 - self.consensus_relax) * carry.z
         )
         gamma_o = self.consensus.dual_update(w_obj, z_new, carry.gamma_o)
         gamma_r = self.consensus.dual_update(w_rob, z_new, carry.gamma_r)

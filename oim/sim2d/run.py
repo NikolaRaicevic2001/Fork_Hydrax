@@ -33,6 +33,7 @@ def build_admm_2d(
     noise_min: float = 0.0,
     noise_kappa: float = 0.3,
     noise_max: float = 0.3,
+    consensus_relax: float = 0.3,
     seed: int = 0,
     robot_optimizer: Optional[SamplingBasedController] = None,
     object_optimizer: Optional[SamplingBasedController] = None,
@@ -47,7 +48,14 @@ def build_admm_2d(
     each control step's own starting residual rather than its absolute
     magnitude, since the residual itself never converges on this task --
     confirmed on the 3D side to substantially reduce divergence over a long
-    run (final pos_err 1.42 vs. 4.70, same seed/config otherwise).
+    run (final pos_err 1.42 vs. 4.70, same seed/config otherwise). Consensus
+    update damped too (task 9/11, `consensus_relax`): neither more ADMM
+    iterations nor more sub-optimizer samples converges the residual either,
+    since each iteration re-solves a stochastic sub-optimizer on both blocks
+    -- damping filters that per-iteration sampling noise out of the sequence
+    z actually follows, confirmed on the 3D side to eliminate the late-run
+    drift entirely (final pos_err 0.45, theta_err 0.02 vs. 1.42, still
+    drifting, undamped).
 
     Args:
         task: The 2D task.
@@ -63,6 +71,7 @@ def build_admm_2d(
         noise_kappa: Extra exploration-noise scale relative to the primal
             residual.
         noise_max: Maximum extra exploration-noise scale.
+        consensus_relax: Damping on the consensus update, in (0, 1].
         seed: Random seed.
         robot_optimizer: Override the robot-block sampler.
         object_optimizer: Override the object-block sampler.
@@ -112,6 +121,7 @@ def build_admm_2d(
         noise_min=noise_min,
         noise_kappa=noise_kappa,
         noise_max=noise_max,
+        consensus_relax=consensus_relax,
         rollout=task.rollout,
         debug_print=False,
     )

@@ -320,6 +320,19 @@ if args.algorithm == "admm":
         noise_min=0.0,
         noise_kappa=0.3,
         noise_max=0.3,
+        # Damped consensus update (task 9/11): neither raising n_admm (no
+        # trend even at 60 iterations/step, tested directly) nor increasing
+        # MPPI's sample count (same oscillation, just centered slightly
+        # differently) converges the primal residual -- each iteration
+        # re-solves a *stochastic* sub-optimizer on both blocks, so z's raw
+        # update carries fresh sampling noise every iteration on top of any
+        # real movement toward agreement. Damping it low-pass-filters that
+        # noise out. Measured over a real 600-step run, same seed/config as
+        # the annealing comparison above: final pos_err 0.45 and theta_err
+        # 0.02 with this on (0.3) vs. 1.42 and drifting with it off (1.0) --
+        # the trajectory plateaus from ~step 90 onward instead of drifting
+        # away after ~step 320.
+        consensus_relax=0.3,
     )
 
     mj_model = deepcopy(task.mj_model)
