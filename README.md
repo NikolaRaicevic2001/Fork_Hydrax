@@ -426,8 +426,7 @@ planners explore widely while they disagree and quieten as they converge.
 does not converge on this task, so $\kappa\|r\|$ sits pinned at its upper
 clip rather than annealing anything. Measured over a 600-step run at
 identical seed and configuration, leaving it on ended at a position error of
-4.65 versus 2.01 with it off. See
-[`docs/consistency-review.md`](docs/consistency-review.md) §2.3.
+4.65 versus 2.01 with it off.
 
 ### Algorithm
 
@@ -474,16 +473,20 @@ not a simulator contact force: the object block has no simulator.
 ADMM layer adds that, via the same function the object block uses):
 
 ```math
-J_r(x^r_t, u^r_t) = r_r \|u^r_t\|^2
-+ \underbrace{d^2_{q}(x^o_t, g)}_{\text{goal}}
-+ \underbrace{d^2_{q}(x^o_t, x^{o*}_t)}_{\ell_c,\ \text{coupling}}
-+ \ell_r(x^r_t) ,
+J_r(x^r_t, u^r_t) = r_r \|u^r_t\|^2 + \ell_r(x^r_t) .
 ```
 
-where $x^{o*}_t$ is the object planner's own nominal trajectory from this
-ADMM iteration. The embodiment-specific part $\ell_r$ shares its first two
-terms across the two worlds and differs only where the embodiment forces it
-to:
+Paper eq. 17 also adds $d^2_q(x^o_t, g)$ (goal) and the coupling term
+$\ell_c = d^2_q(x^o_t, x^{o*}_t)$ against the object planner's own nominal
+trajectory $x^{o*}_t$ — but that paper has no ADMM, so those two terms are
+its *only* mechanism coupling the robot block to the object block. Here the
+consensus penalty already couples the two, on the wrench; keeping $\ell_o$
+and $\ell_c$ as well meant the robot was pulled toward the object's state
+directly *and* toward matching its wrench, which can disagree during a
+transient rather than leaving disagreement to the consensus/dual update to
+resolve. Dropped from `robot_running_cost` on both sides. $\ell_r$ shares
+its first two terms across the two worlds and differs only where the
+embodiment forces it to:
 
 ```math
 \ell_r = \underbrace{w_{ee}\max\big(\|p^{ee}_t - p^o_t\|^2 - r_0^2,\ 0\big)
@@ -642,9 +645,7 @@ differ, but the *quantity* they estimate must not — and they are not obviously
 the same quantity: 2D reads the wrench its contact solver actually computed,
 while 3D's default estimator *infers* one from the observed object twist
 through the limit surface, which is only faithful insofar as MJX contact
-behaves like that model. That, and five formulation options implemented on
-neither side, are tracked in
-[`docs/consistency-review.md`](docs/consistency-review.md).
+behaves like that model.
 
 ## Code layout
 
@@ -746,7 +747,7 @@ class MyTask(Task, ConsensusTask):
     object_terminal_cost()     # l_f
     object_state_from_robot()  # pull x^o out of the robot's MJX state
     realized_consensus()       # A^r: extraction map, read from the rollout
-    robot_running_cost()       # J_r = l_o + l_r + l_c  (no ADMM penalty!)
+    robot_running_cost()       # J_r = l_r  (no ADMM penalty!)
     robot_terminal_cost()
 ```
 
