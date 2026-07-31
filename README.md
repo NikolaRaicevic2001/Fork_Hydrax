@@ -417,16 +417,22 @@ $d^{(l+1)} = \rho\,(z^{(l+1)} - z^{(l)})$:
 \rho, & \text{otherwise}
 \end{cases}
 \qquad
-\Sigma_u^{(l+1)} \leftarrow \max\big(\Sigma_{\min},\, \kappa\,\|r^{(l+1)}\|\big)
+\Sigma_u^{(l+1)} \leftarrow \mathrm{clip}\Big(\kappa\,\frac{\|r^{(l+1)}\|}{\|r^{(0)}\|},\ \Sigma_{\min},\ \Sigma_{\max}\Big)
 ```
 
 Annealing the exploration covariance with the residual is meant to make the
 planners explore widely while they disagree and quieten as they converge.
-**It is off by default** ($\kappa = 0$) in both worlds: the primal residual
-does not converge on this task, so $\kappa\|r\|$ sits pinned at its upper
-clip rather than annealing anything. Measured over a 600-step run at
-identical seed and configuration, leaving it on ended at a position error of
-4.65 versus 2.01 with it off.
+The primal residual does not converge on this task — it plateaus well above
+zero rather than shrinking — so annealing against its *absolute* magnitude
+(the original scheme, $\kappa\|r^{(l+1)}\|$) pinned at $\Sigma_{\max}$
+permanently and measurably worsened divergence. Annealing instead against
+each control step's *own* starting residual $\|r^{(0)}\|$ (fixed for that
+step's iterations) is dimensionless and actually moves within a step
+regardless of where the residual's absolute scale happens to sit. **On by
+default** in both worlds. Measured over a 600-step run at identical seed
+and configuration: final position error 1.42 with this on versus 4.70 with
+it off (both after the robot cost-function change described in
+[cost functions](#cost-functions)).
 
 ### Algorithm
 
@@ -593,14 +599,20 @@ Where the implementation departs from the formulation above:
   $\sqrt{2H}$. At $H = 15$ the observed residuals are $O(1)$, so
   $\epsilon_r = \epsilon_s = 0.5$ on both sides; the $0.05$ the paper uses is
   provably unreachable at this horizon and the early exit would never fire.
-- **Variance annealing is additive, and disabled.** Because any sampler can be
-  plugged into either block and most do not expose a mutable covariance, the
-  wrappers *add* a perturbation of scale
-  $\mathrm{clip}(\kappa\|r\|,\ \sigma_{\min},\ \sigma_{\max})$ on top of
+- **Variance annealing is additive, and relative to each step's own start.**
+  Because any sampler can be plugged into either block and most do not
+  expose a mutable covariance, the wrappers *add* a perturbation on top of
   whatever the injected optimizer proposes, rather than replacing $\Sigma_u$.
-  The upper clip is required — $\kappa\|r\|$ is otherwise an unbounded
-  positive feedback loop — and with $\|r\|$ not converging on this task the
-  clip binds permanently, so the default is $\kappa = 0$.
+  The perturbation scale is
+  $\mathrm{clip}(\kappa\,\|r^{(l)}\|/\|r^{(0)}\|,\ \sigma_{\min},\ \sigma_{\max})$,
+  where $r^{(0)}$ is *this control step's* first-iteration residual, locked
+  in and held fixed for the rest of that step's loop
+  (`ADMM._ADMMCarry.r0`) — not the residual's absolute magnitude, which
+  never converges on this task and pinned the old, unnormalized version of
+  this scheme at $\sigma_{\max}$ permanently. The upper clip is still a hard
+  ceiling against runaway feedback (the ratio can exceed 1 if a step's
+  residual gets worse rather than better), but no longer binds by
+  construction the way an absolute-magnitude signal did.
 - **The direct wrench is box-bounded at the friction-cone limit.** The object
   block's action is clamped to $\pm D^{-1}$, so it cannot propose a wrench the
   support surface could not transmit no matter where the robot pushed. This is

@@ -658,12 +658,13 @@ class ADMMParams:
         gamma_o: The object block's scaled dual variable, (H, dim).
         gamma_r: The robot block's scaled dual variable, (H, dim).
         rho: The current ADMM penalty weight (adapted online).
-        primal_residual: The last ADMM iteration's primal residual, carried
-            across real control steps to seed exploration-noise annealing.
-        dual_residual: The last ADMM iteration's dual residual. Not used by
-            any control-flow logic (only `primal_residual` feeds the noise
-            anneal and the adaptive-`rho` rule reads both from `_ADMMCarry`
-            directly) -- carried here purely so callers can log/plot it.
+        primal_residual: The last ADMM iteration's primal residual. Not read
+            back in on the next control step -- the noise anneal measures
+            progress relative to *that* step's own first iteration instead
+            (see `_ADMMCarry.r0`), so this is carried only for callers to
+            log/plot.
+        dual_residual: The last ADMM iteration's dual residual, likewise
+            carried only for logging.
         rng: PRNG key for the ADMM-level exploration noise.
     """
 
@@ -690,7 +691,13 @@ class ADMMParams:
 
 @dataclass
 class _ADMMCarry:
-    """Internal `jax.lax.while_loop` carry for one real control step."""
+    """Internal `jax.lax.while_loop` carry for one real control step.
+
+    `r0` is the primal residual computed by this control step's own first
+    ADMM iteration, locked in and held fixed for the rest of the loop -- the
+    baseline the noise anneal measures relative progress against. See
+    `ADMM._admm_iteration` for why it's relative rather than absolute.
+    """
 
     it: jax.Array
     object_params: Any
@@ -701,6 +708,7 @@ class _ADMMCarry:
     rho: jax.Array
     primal_res: jax.Array
     dual_res: jax.Array
+    r0: jax.Array
     rng: jax.Array
 
 
@@ -758,15 +766,19 @@ class ADMM(SamplingBasedController):
                 that anchors each ADMM iteration to the previous one.
             rho_init: Initial ADMM penalty weight.
             noise_min: Minimum extra exploration-noise scale.
-            noise_kappa: Scale of extra exploration noise relative to the
-                primal residual (Algorithm 4 step 8, generalized -- see the
-                module docstring for why this differs from the paper).
-            noise_max: Maximum extra exploration-noise scale. Since the
-                residual has no natural upper bound, an uncapped
-                `noise_kappa * residual` can create a runaway feedback loop
-                (more noise -> more disagreement -> larger residual -> more
-                noise). Defaults to `noise_min`, i.e. annealing is inert
-                (a constant noise floor) unless explicitly raised.
+            noise_kappa: Scale of extra exploration noise relative to how
+                converged this control step's ADMM iterations are so far
+                (Algorithm 4 step 8, generalized -- see `_admm_iteration`
+                for why this is measured relative to this step's own
+                starting residual rather than the residual's absolute
+                magnitude, which does not converge on this task).
+            noise_max: Maximum extra exploration-noise scale. The relative
+                measure can still exceed 1 if a step's residual gets worse
+                rather than better, so this remains a hard ceiling against
+                runaway feedback (more noise -> more disagreement -> larger
+                residual -> more noise). Defaults to `noise_min`, i.e.
+                annealing is inert (a constant noise floor) unless
+                explicitly raised.
             rollout: How the robot block advances its state one step.
                 Defaults to `MJXRollout` (a MuJoCo MJX scene); pass
                 `oim.sim2d.Analytic2DRollout` to drive the 2D world with
@@ -881,8 +893,21 @@ class ADMM(SamplingBasedController):
     ) -> Tuple[_ADMMCarry, ADMMTrajectory]:
         """One ADMM iteration: object update -> robot update -> consensus."""
         rng, obj_rng, rob_rng = jax.random.split(carry.rng, 3)
+
+        # Anneal relative to *this control step's own* starting residual,
+        # not its absolute magnitude: the residual plateaus well above zero
+        # on this task rather than converging, so a fixed noise_kappa/
+        # noise_max tuned against one regime saturates permanently in
+        # another (this is why annealing shipped disabled -- see task 7's
+        # log entry). `ratio` is ~1 while this step hasn't improved on where
+        # it started and shrinks as it does, regardless of what the
+        # residual's absolute scale happens to be. it==0 has no "start of
+        # this step" yet, so it gets full noise (ratio=1) unconditionally.
+        ratio = jnp.where(
+            carry.it == 0, 1.0, carry.primal_res / jnp.maximum(carry.r0, 1e-6)
+        )
         noise_scale = jnp.clip(
-            self.noise_kappa * carry.primal_res, self.noise_min, self.noise_max
+            self.noise_kappa * ratio, self.noise_min, self.noise_max
         )
         prev_object_knots = carry.object_params.mean
         prev_robot_knots = carry.robot_params.mean
@@ -927,6 +952,11 @@ class ADMM(SamplingBasedController):
         )
         dual_res = carry.rho * self.consensus.residual_norm(z_new - carry.z)
 
+        # Lock in this step's baseline from its own first iteration's
+        # result; held fixed for every later iteration this step (see
+        # `_ADMMCarry.r0` and the ratio above).
+        r0 = jnp.where(carry.it == 0, primal_res, carry.r0)
+
         # Algorithm 4 step 7: adaptive penalty.
         rho = jnp.where(
             primal_res > 10.0 * dual_res,
@@ -953,6 +983,7 @@ class ADMM(SamplingBasedController):
             rho=rho,
             primal_res=primal_res,
             dual_res=dual_res,
+            r0=r0,
             rng=rng,
         )
         return new_carry, rollouts
@@ -996,6 +1027,9 @@ class ADMM(SamplingBasedController):
             rho=params.rho,
             primal_res=params.primal_residual,
             dual_res=jnp.asarray(jnp.inf, dtype=jnp.float32),
+            # Placeholder -- `_admm_iteration` locks the real value in from
+            # this step's own first iteration (it==0), never reads this one.
+            r0=jnp.asarray(1.0, dtype=jnp.float32),
             rng=admm_rng,
         )
 
