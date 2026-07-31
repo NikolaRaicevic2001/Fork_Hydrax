@@ -320,34 +320,16 @@ if args.algorithm == "admm":
         eps_s=0.5,
         proximal_weight=args.gamma,
         rho_init=args.rho,
-        # Residual-driven noise annealing (Algorithm 4 step 8), re-enabled
-        # (task 7/11): the primal residual doesn't converge on this task, so
-        # annealing against its *absolute* magnitude (the original scheme)
-        # pinned at noise_max permanently and measurably worsened divergence
-        # (task 5a). `_admm_iteration` now anneals against each control
-        # step's own starting residual instead, which is dimensionless and
-        # actually varies within a step regardless of the residual's
-        # absolute regime. Measured over a real 600-step run, same seed and
-        # config otherwise: final pos_err 1.42 with this on vs. 4.70 with it
-        # off, and the trajectory stays within 0.27-0.5 of the goal for
-        # roughly steps 20-320 before drifting, instead of diverging almost
-        # immediately.
+        # Residual-driven noise annealing (Algorithm 4 step 8) is off: the
+        # primal residual never converges for this task (measured, over a
+        # real 600-step run), so noise = clip(kappa*residual, min, max)
+        # just sits pinned near noise_max the whole time, adding
+        # near-constant large perturbations instead of annealing anything
+        # -- confirmed directly to make divergence worse (final pos_err
+        # 4.65 with it on vs. 2.0 with it off, same seed/config otherwise).
         noise_min=0.0,
-        noise_kappa=0.3,
-        noise_max=0.3,
-        # Damped consensus update (task 9/11): neither raising n_admm (no
-        # trend even at 60 iterations/step, tested directly) nor increasing
-        # MPPI's sample count (same oscillation, just centered slightly
-        # differently) converges the primal residual -- each iteration
-        # re-solves a *stochastic* sub-optimizer on both blocks, so z's raw
-        # update carries fresh sampling noise every iteration on top of any
-        # real movement toward agreement. Damping it low-pass-filters that
-        # noise out. Measured over a real 600-step run, same seed/config as
-        # the annealing comparison above: final pos_err 0.45 and theta_err
-        # 0.02 with this on (0.3) vs. 1.42 and drifting with it off (1.0) --
-        # the trajectory plateaus from ~step 90 onward instead of drifting
-        # away after ~step 320.
-        consensus_relax=0.3,
+        noise_kappa=0.0,
+        noise_max=0.0,
     )
 
     mj_model = deepcopy(task.mj_model)

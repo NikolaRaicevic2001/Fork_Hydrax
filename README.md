@@ -251,8 +251,8 @@ free there.
 The last two differ only as CLI defaults — the underlying
 `build_admm_2d(n_admm=8)` matches 3D, so pass `--n-admm 8 --seed 5` for a
 like-for-like comparison. Everything not exposed as a flag (horizon,
-$\epsilon_r$, $\epsilon_s$, noise annealing, consensus damping, wrench
-bounds) is already identical; see [`oim/sim2d/run.py`](oim/sim2d/run.py).
+$\epsilon_r$, $\epsilon_s$, noise annealing, wrench bounds) is already
+identical; see [`oim/sim2d/run.py`](oim/sim2d/run.py).
 
 ### Outputs
 
@@ -390,26 +390,12 @@ induce, and supplies the strong convexity that non-convex ADMM convergence
 results require.
 
 **2 — Consensus update.** The wrench space is unconstrained, so the projection
-$\Pi_\mathcal{Z}$ is the identity and the update is a plain average, optionally
-damped against the raw average $\bar{z}^{(l+1)}_t$ by $\beta \in (0, 1]$
-(`consensus_relax`, task 9/11 -- $\beta = 1$ is the undamped update above):
+$\Pi_\mathcal{Z}$ is the identity and the update is a plain average:
 
 ```math
-\bar{z}^{(l+1)}_t = \tfrac{1}{2}\Big( A^o(\mathbf{U}^{o,(l+1)})_t + y^{o,(l)}_t
-+ A^r(\mathbf{U}^{r,(l+1)})_t + y^{r,(l)}_t \Big),
-\qquad
-z^{(l+1)}_t = \beta\,\bar{z}^{(l+1)}_t + (1 - \beta)\,z^{(l)}_t
+z^{(l+1)}_t = \tfrac{1}{2}\Big( A^o(\mathbf{U}^{o,(l+1)})_t + y^{o,(l)}_t
++ A^r(\mathbf{U}^{r,(l+1)})_t + y^{r,(l)}_t \Big)
 ```
-
-Both blocks resolve a *stochastic* sub-optimizer every ADMM iteration, so
-$\bar{z}^{(l+1)}$ carries fresh sampling noise on top of whatever real
-movement toward agreement happened -- confirmed directly: neither more ADMM
-iterations (tested up to 60 per step, no downward trend) nor more
-sub-optimizer samples (tested 64 vs. 512) converges the primal residual, but
-damping ($\beta = 0.3$) low-pass-filters the noise out of $z$'s own
-trajectory and eliminates a late-run divergence a 600-step run otherwise
-shows (final position error 0.45 vs. 1.42, and orientation converges to
-0.02 rad instead of still drifting). Default $\beta = 0.3$ on both sides.
 
 **3 — Dual update.** The scaled duals integrate the disagreement, so a wrench
 the robot repeatedly fails to produce is penalized ever more heavily until both
@@ -432,22 +418,16 @@ $d^{(l+1)} = \rho\,(z^{(l+1)} - z^{(l)})$:
 \rho, & \text{otherwise}
 \end{cases}
 \qquad
-\Sigma_u^{(l+1)} \leftarrow \mathrm{clip}\Big(\kappa\,\frac{\|r^{(l+1)}\|}{\|r^{(0)}\|},\ \Sigma_{\min},\ \Sigma_{\max}\Big)
+\Sigma_u^{(l+1)} \leftarrow \max\big(\Sigma_{\min},\, \kappa\,\|r^{(l+1)}\|\big)
 ```
 
 Annealing the exploration covariance with the residual is meant to make the
 planners explore widely while they disagree and quieten as they converge.
-The primal residual does not converge on this task — it plateaus well above
-zero rather than shrinking — so annealing against its *absolute* magnitude
-(the original scheme, $\kappa\|r^{(l+1)}\|$) pinned at $\Sigma_{\max}$
-permanently and measurably worsened divergence. Annealing instead against
-each control step's *own* starting residual $\|r^{(0)}\|$ (fixed for that
-step's iterations) is dimensionless and actually moves within a step
-regardless of where the residual's absolute scale happens to sit. **On by
-default** in both worlds. Measured over a 600-step run at identical seed
-and configuration: final position error 1.42 with this on versus 4.70 with
-it off (both after the robot cost-function change described in
-[cost functions](#cost-functions)).
+**It is off by default** ($\kappa = 0$) in both worlds: the primal residual
+does not converge on this task, so $\kappa\|r\|$ sits pinned at its upper
+clip rather than annealing anything. Measured over a 600-step run at
+identical seed and configuration, leaving it on ended at a position error of
+4.65 versus 2.01 with it off.
 
 ### Algorithm
 
@@ -614,31 +594,14 @@ Where the implementation departs from the formulation above:
   $\sqrt{2H}$. At $H = 15$ the observed residuals are $O(1)$, so
   $\epsilon_r = \epsilon_s = 0.5$ on both sides; the $0.05$ the paper uses is
   provably unreachable at this horizon and the early exit would never fire.
-- **Variance annealing is additive, and relative to each step's own start.**
-  Because any sampler can be plugged into either block and most do not
-  expose a mutable covariance, the wrappers *add* a perturbation on top of
+- **Variance annealing is additive, and disabled.** Because any sampler can be
+  plugged into either block and most do not expose a mutable covariance, the
+  wrappers *add* a perturbation of scale
+  $\mathrm{clip}(\kappa\|r\|,\ \sigma_{\min},\ \sigma_{\max})$ on top of
   whatever the injected optimizer proposes, rather than replacing $\Sigma_u$.
-  The perturbation scale is
-  $\mathrm{clip}(\kappa\,\|r^{(l)}\|/\|r^{(0)}\|,\ \sigma_{\min},\ \sigma_{\max})$,
-  where $r^{(0)}$ is *this control step's* first-iteration residual, locked
-  in and held fixed for the rest of that step's loop
-  (`ADMM._ADMMCarry.r0`) — not the residual's absolute magnitude, which
-  never converges on this task and pinned the old, unnormalized version of
-  this scheme at $\sigma_{\max}$ permanently. The upper clip is still a hard
-  ceiling against runaway feedback (the ratio can exceed 1 if a step's
-  residual gets worse rather than better), but no longer binds by
-  construction the way an absolute-magnitude signal did.
-- **The consensus update is damped (`consensus_relax`, task 9/11).** Neither
-  raising `n_admm` nor raising the sub-optimizers' sample count converges the
-  primal residual on this task -- both blocks re-solve a stochastic
-  sub-optimizer every iteration, so the raw consensus average carries fresh
-  sampling noise on top of any real movement toward agreement, iteration
-  after iteration, regardless of how many there are. Blending the raw update
-  with the previous $z$ ($\beta = 0.3$ default) filters that noise out of
-  the sequence $z$ follows and eliminates a late-run divergence a long
-  closed-loop run otherwise shows -- it does not, by itself, make the two
-  blocks agree on a smaller residual; the wrench mismatch this measures
-  remains a real, open question, not yet root-caused.
+  The upper clip is required — $\kappa\|r\|$ is otherwise an unbounded
+  positive feedback loop — and with $\|r\|$ not converging on this task the
+  clip binds permanently, so the default is $\kappa = 0$.
 - **The direct wrench is box-bounded at the friction-cone limit.** The object
   block's action is clamped to $\pm D^{-1}$, so it cannot propose a wrench the
   support surface could not transmit no matter where the robot pushed. This is

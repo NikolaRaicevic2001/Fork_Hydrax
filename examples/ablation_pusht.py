@@ -94,9 +94,8 @@ def _run_admm(task: PushT, seed: int, steps: int) -> Dict[str, Any]:
         proximal_weight=0.1,
         rho_init=10.0,
         noise_min=0.0,
-        noise_kappa=0.3,
-        noise_max=0.3,
-        consensus_relax=0.3,
+        noise_kappa=0.0,
+        noise_max=0.0,
         debug_print=False,
     )
     mj_model, mj_data = _exec_model_and_data(task)
