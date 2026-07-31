@@ -270,7 +270,22 @@ if args.algorithm == "admm":
         f"robot={args.robot_opt}, object={args.object_opt}"
     )
 
-    task = PushT(impl=impl, clutter=True, planning_dt=plan_dt, robot=args.robot)
+    # "contact" (real MJX -qfrc_constraint) over "twist" (inferred through
+    # the limit surface) for the point mass, only embodiment where it's
+    # available (task 10/11): "twist" is a model-mismatched estimate of the
+    # real contact wrench, and swapping in the real one turned a permanent
+    # 0.44-0.50 position-error plateau (600-step run, otherwise identical
+    # config) into reaching goal_pos_tol outright at one seed and getting
+    # within 0.07 m at another -- the first configuration this session that
+    # gets close to converging at all, not just stops diverging.
+    consensus_source = "contact" if args.robot == "point" else "twist"
+    task = PushT(
+        impl=impl,
+        clutter=True,
+        planning_dt=plan_dt,
+        robot=args.robot,
+        consensus_source=consensus_source,
+    )
 
     # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
     # and comparable to the task costs, so rho is a meaningful knob.

@@ -96,6 +96,7 @@ def _run_admm(task: PushT, seed: int, steps: int) -> Dict[str, Any]:
         noise_min=0.0,
         noise_kappa=0.3,
         noise_max=0.3,
+        consensus_relax=0.3,
         debug_print=False,
     )
     mj_model, mj_data = _exec_model_and_data(task)
@@ -150,7 +151,12 @@ def main() -> None:
     parser.add_argument("--seed0", type=int, default=0)
     args = parser.parse_args()
 
-    task = PushT(clutter=True, planning_dt=PLAN_DT, robot="point")
+    task = PushT(
+        clutter=True,
+        planning_dt=PLAN_DT,
+        robot="point",
+        consensus_source="contact",
+    )
     runners = {
         "admm": lambda seed: _run_admm(task, seed, args.steps),
         "mppi": lambda seed: _run_flat("mppi", task, seed, args.steps),
