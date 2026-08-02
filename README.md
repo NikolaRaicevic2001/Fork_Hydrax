@@ -306,6 +306,70 @@ worlds use the same key names and frames, so a 2D and a 3D run can be
 compared entry for entry. Each file carries a `schema` block describing its
 own indexing and conventions.
 
+### Config-driven launches
+
+[`oim/run_launch.py`](oim/run_launch.py) covers the same ground as
+`examples/pusht.py` (2D/3D, every algorithm, single runs and `--eval`) but
+every hyperparameter comes from a YAML config, not a CLI default — a
+single-run and an `--eval` run of the same algorithm always build the
+identical thing, and comparing two algorithms means comparing the same
+sampler budget, task physics and execution model, not whatever a CLI flag
+happened to be set to that day. It has its own code (not a caller of
+`examples/pusht.py`); the tradeoff is deliberate, same as
+`examples/pusht.py` vs. the older `examples/ablation_pusht.py`.
+
+`--env {name}` selects `oim/configs/{name}.yaml`, which supplies every
+default below; only `clutter` exists today (one 3D scene, one 2D
+scenario), but the flag is there now so a future second environment (a
+different 3D layout, or a 2D scenario bundled with its own physics) is a
+new YAML file, not a CLI change. Every other flag matches
+`examples/pusht.py`'s exactly and still works as a **one-off override** —
+omit it and the YAML value is used; pass it and that run alone uses the
+override, nothing else does.
+
+```bash
+# 3D ADMM, interactive viewer, every arg spelled out (--env is the only
+# one that isn't already in oim/configs/clutter.yaml's defaults)
+uv run python -m oim.run_launch \
+    --env clutter --world 3d --robot point --samples 64 --horizon 15 \
+    admm --robot-opt mppi --object-opt mppi --n-admm 8 --rho 10.0 \
+    --gamma 0.1 --seed 5 --steps 200
+
+# 3D ADMM on the xArm6, headless, recorded, mixed sub-optimizers
+uv run python -m oim.run_launch \
+    --env clutter --world 3d --robot xarm6 --samples 64 --horizon 15 \
+    --record admm --robot-opt cem --object-opt cbo --n-admm 8 --rho 10.0 \
+    --gamma 0.1 --seed 5 --headless --steps 300 --show-plans
+
+# 3D flat CEM baseline, 5-trial eval, every eval flag explicit
+uv run python -m oim.run_launch \
+    --env clutter --world 3d --robot point --samples 64 --horizon 15 \
+    cem --eval --trials 5 --seed0 0 --steps 200
+
+# 2D ADMM, every 2D-specific toggle explicit (--animate needs the plot,
+# so it isn't combined with --no-plot here)
+uv run python -m oim.run_launch \
+    --env clutter --world 2d --samples 64 --horizon 15 \
+    --contact-action --no-relocate --obstacles --animate \
+    admm --n-admm 6 --rho 10.0 --gamma 0.1 --seed 0 --steps 200
+
+# 2D ADMM, 5-trial eval (2D has no flat baseline to compare against)
+uv run python -m oim.run_launch \
+    --env clutter --world 2d admm --eval --trials 5 --seed0 0 --steps 200
+```
+
+`oim/configs/clutter.yaml` groups every value by what it configures —
+`world3d` (robot, planning/execution timesteps), `world2d` (scenario,
+object mass/friction), `sampler` (shared `num_samples`/`horizon`, plus a
+block per sub-optimizer: `mppi`, `cem`, `ps`, `cbo`), `admm` (`n_admm`,
+`rho`, `gamma`, the sub-optimizer choices, residual tolerances, noise
+annealing), and `run` (seed, steps, trials, the goal-reached tolerances).
+That last one exists because `oim/sim3d/run.py`'s `run_3d_admm` and
+`run_3d_plain` otherwise default to *different* "reached" thresholds
+(0.05/0.05 vs. 0.06/0.10) — `run_launch.py` passes the same config value
+to every method it builds so a `--eval` comparison isn't quietly biased
+toward whichever method got the more lenient threshold.
+
 ### Other entry points
 
 | What | Where |
@@ -313,7 +377,7 @@ own indexing and conventions.
 | Open-loop trajectory optimization | [`oim/open_loop.py`](oim/open_loop.py), demo in [`examples/cart_pole_trajectory_optimization.py`](examples/cart_pole_trajectory_optimization.py) |
 | Asynchronous simulation — controller and simulator in separate processes, for a realistic picture of closed-loop latency | [`oim/sim3d/asynchronous.py`](oim/sim3d/asynchronous.py), demo in [`examples/cube_async.py`](examples/cube_async.py) |
 | Headless MJX ADMM driver, returning the same log dict as `run_2d` | [`oim/sim3d/run.py`](oim/sim3d/run.py) |
-| ADMM-vs-flat-baseline evaluation over trials — same task, same robot-level sampler budget, reports success rate / position + orientation error (mean & std) / frequency / execution time | [`oim/utils/metrics.py`](oim/utils/metrics.py), run via `examples/pusht.py`'s `--eval` (see [Evaluating over trials](#evaluating-over-trials)), saved via [`oim/utils/results_eval.py`](oim/utils/results_eval.py) to `oim/results/results_eval/` |
+| ADMM-vs-flat-baseline evaluation over trials — same task, same robot-level sampler budget, reports success rate / position + orientation error (mean & std) / frequency / execution time | [`oim/utils/metrics.py`](oim/utils/metrics.py), run via `examples/pusht.py`'s `--eval` (see [Evaluating over trials](#evaluating-over-trials)) or config-driven via [`oim/run_launch.py`](oim/run_launch.py), saved via [`oim/utils/results_eval.py`](oim/utils/results_eval.py) to `oim/results/results_eval/` |
 | Other demos from the base library (pendulum, cart-pole, humanoid standup and mocap, cube rotation, walker, crane, …) | [`examples/`](examples/) |
 
 ## Mathematical formulation
