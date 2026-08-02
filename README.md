@@ -284,7 +284,7 @@ own indexing and conventions.
 | Open-loop trajectory optimization | [`oim/open_loop.py`](oim/open_loop.py), demo in [`examples/cart_pole_trajectory_optimization.py`](examples/cart_pole_trajectory_optimization.py) |
 | Asynchronous simulation — controller and simulator in separate processes, for a realistic picture of closed-loop latency | [`oim/sim3d/asynchronous.py`](oim/sim3d/asynchronous.py), demo in [`examples/cube_async.py`](examples/cube_async.py) |
 | Headless MJX ADMM driver, returning the same log dict as `run_2d` | [`oim/sim3d/run.py`](oim/sim3d/run.py) |
-| ADMM-vs-flat-baseline ablation — same task, same robot-level sampler budget, reports success rate / position error / frequency / execution time (the paper's own Sec. VI metrics) | [`oim/utils/metrics.py`](oim/utils/metrics.py), demo in [`examples/ablation_pusht.py`](examples/ablation_pusht.py), output in `oim/results/ablations/` |
+| ADMM-vs-flat-baseline ablation — same task, same robot-level sampler budget, reports success rate / position + orientation error (mean & std) / frequency / execution time | [`oim/utils/metrics.py`](oim/utils/metrics.py), demo in [`examples/ablation_pusht.py`](examples/ablation_pusht.py), output in `oim/results/results_eval/` |
 | Other demos from the base library (pendulum, cart-pole, humanoid standup and mocap, cube rotation, walker, crane, …) | [`examples/`](examples/) |
 
 ## Mathematical formulation

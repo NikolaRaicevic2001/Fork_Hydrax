@@ -175,7 +175,7 @@ def main() -> None:
         print(f"  {metrics}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(ROOT, "results", "ablations")
+    out_dir = os.path.join(ROOT, "results", "results_eval")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"pusht3d_point_ablation_{timestamp}.json")
     with open(path, "w") as f:
