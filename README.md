@@ -73,12 +73,12 @@ non-myopic reasoning — a greedy pusher gets stuck behind an obstacle.
 It runs in **two worlds that share the same algorithm**. The ADMM loop, the
 consensus space, the object-level subproblem, the object cost and the shared
 robot cost terms are the same code with the same weights in both; only the
-robot block's one-step rollout differs. Pick the world by which entry point
-you run:
+robot block's one-step rollout differs. Both worlds run from one entry
+point, [`examples/pusht.py`](examples/pusht.py); pick the world with
+`--world {3d,2d}` (default `3d`):
 
 | | 3D (MuJoCo MJX) | 2D (analytic) |
 | --- | --- | --- |
-| Entry point | [`examples/pusht.py`](examples/pusht.py) | [`examples/pusht2d.py`](examples/pusht2d.py) |
 | Robot | 2-DOF point pusher, or 6-DoF xArm6 | disc robot, velocity-controlled |
 | Physics | full MJX contact | closed-form single-point contact |
 | Output | passive viewer, or `--headless` plot | plot on exit, gif with `--animate` |
@@ -115,6 +115,7 @@ Flag order matters: these go **before** the algorithm name.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `--world {3d,2d}` | `3d` | Which world to run (table above) |
 | `--robot {point,xarm6}` | `point` | Embodiment. `xarm6` always implies the cluttered scene |
 | `--record` | off | Write an mp4 (needs `ffmpeg`). Combines with `--headless`, which renders offscreen — no display required |
 | `--warp` | off | Use the experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) backend instead of JAX for rollouts |
@@ -127,6 +128,8 @@ These go **after** `admm`:
 | `--show-plans` | off | Overlay both blocks' predicted object trajectories — live, and in the recording (below) |
 | `--headless` | off | No viewer; run `--steps` steps and save plot + results. Add `--record` for an mp4 too |
 | `--steps` | 200 | Control steps. `--headless` only — the viewer path runs until you close the window |
+| `--eval` | off | Run `--trials` seeds and save aggregate stats instead of one recorded run — see [Evaluating over trials](#evaluating-over-trials) |
+| `--trials`, `--seed0` | 5, 0 | `--eval` only: how many seeds, and the first one (`seed0 .. seed0 + trials - 1`) |
 
 #### Watching the two blocks negotiate
 
@@ -171,25 +174,51 @@ loop, so with the flag off nothing runs at all and timing is untouched.
 On a machine with no display at all, set `MUJOCO_GL=egl` (or `osmesa` for
 software rendering) so the offscreen renderer can get a GL context.
 
+### Evaluating over trials
+
+```bash
+# 5 seeds of ADMM, plus flat MPPI/PS at the same sampler budget, for comparison
+uv run python examples/pusht.py admm --eval --trials 5 --steps 200
+
+# a flat baseline alone, same seeds
+uv run python examples/pusht.py mppi --eval --trials 5 --steps 200
+
+# 2D: ADMM only, no flat baseline (PushT2D has no plain running/terminal cost)
+uv run python examples/pusht.py --world 2d --env corridor admm --eval
+```
+
+`--eval` runs `--trials` seeds of the chosen algorithm instead of one
+recorded run, aggregates success rate, position/orientation error
+(mean & std), frequency and execution time via
+[`oim/utils/metrics.py`](oim/utils/metrics.py)'s `aggregate_metrics`, and
+saves the result with [`oim/utils/results_eval.py`](oim/utils/results_eval.py)
+to `oim/results/results_eval/`. On 3D, `admm --eval` also runs flat
+MPPI/PS at the same sampler budget so ADMM's object-level hierarchy is
+judged against a bigger-search baseline, not just itself.
+
 ### Push-T in 2D
 
 ```bash
 # T-block through the same clutter as the MJX scene
-uv run python examples/pusht2d.py
+uv run python examples/pusht.py --world 2d admm
 
 # push *through* a tight opening rather than around obstacles
-uv run python examples/pusht2d.py --env corridor
-uv run python examples/pusht2d.py --env gate
+uv run python examples/pusht.py --world 2d --env corridor admm
+uv run python examples/pusht.py --world 2d --env gate admm
 
 # no jit anywhere -- breakpoint inside the physics or the ADMM math
-uv run python examples/pusht2d.py --no-jit --steps 3
+uv run python examples/pusht.py --world 2d --no-jit admm --steps 3
 
 # empty scene, to separate "can it push at all" from "can it route"
-uv run python examples/pusht2d.py --no-obstacles
+uv run python examples/pusht.py --world 2d --no-obstacles admm
 
 # A/B the contact-action object parameterization against the default
-uv run python examples/pusht2d.py --contact-action
+uv run python examples/pusht.py --world 2d --contact-action admm
 ```
+
+`--world 2d` only ever runs `admm` (see [Push-T in 3D](#push-t-in-3d)
+above), but the subcommand is still required — `admm` is not implied.
+`--env`, like every other top-level flag, must come **before** it.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -284,7 +313,7 @@ own indexing and conventions.
 | Open-loop trajectory optimization | [`oim/open_loop.py`](oim/open_loop.py), demo in [`examples/cart_pole_trajectory_optimization.py`](examples/cart_pole_trajectory_optimization.py) |
 | Asynchronous simulation — controller and simulator in separate processes, for a realistic picture of closed-loop latency | [`oim/sim3d/asynchronous.py`](oim/sim3d/asynchronous.py), demo in [`examples/cube_async.py`](examples/cube_async.py) |
 | Headless MJX ADMM driver, returning the same log dict as `run_2d` | [`oim/sim3d/run.py`](oim/sim3d/run.py) |
-| ADMM-vs-flat-baseline ablation — same task, same robot-level sampler budget, reports success rate / position + orientation error (mean & std) / frequency / execution time | [`oim/utils/metrics.py`](oim/utils/metrics.py), demo in [`examples/ablation_pusht.py`](examples/ablation_pusht.py), output in `oim/results/results_eval/` |
+| ADMM-vs-flat-baseline evaluation over trials — same task, same robot-level sampler budget, reports success rate / position + orientation error (mean & std) / frequency / execution time | [`oim/utils/metrics.py`](oim/utils/metrics.py), run via `examples/pusht.py`'s `--eval` (see [Evaluating over trials](#evaluating-over-trials)), saved via [`oim/utils/results_eval.py`](oim/utils/results_eval.py) to `oim/results/results_eval/` |
 | Other demos from the base library (pendulum, cart-pole, humanoid standup and mocap, cube rotation, walker, crane, …) | [`examples/`](examples/) |
 
 ## Mathematical formulation
@@ -569,7 +598,7 @@ the robot block's concern — the object planner only needs to say what
 motion it wants, and making it also choose a contact point duplicates the
 robot block's job inside the wrong subproblem. The contact-action path
 remains available (`PushT2D(contact_actions=True)`, or
-`examples/pusht2d.py --contact-action`) so the two can be compared, since
+`examples/pusht.py --world 2d --contact-action admm`) so the two can be compared, since
 the constraint it buys — every proposal inside the friction cone — is
 real.
 
