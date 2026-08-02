@@ -376,16 +376,12 @@ class PushT2D(ConsensusTask):
     def robot_running_cost(
         self, state: Sim2DState, control: jax.Array, obj_ref_t: jax.Array
     ) -> jax.Array:
-        """J_r = effort + approach + align + clearance.
+        """J_r = effort + approach + align + clearance + goal + coupling.
 
         Mirrors `PushT.robot_running_cost`, minus the terms that only mean
         something for a 3D end-effector (tilt, tip height) -- there is no
-        orientation or height for a point/disc robot to shape. No object
-        goal/coupling tracking here either, for the same reason `PushT`
-        drops it: the wrench consensus penalty already couples the two
-        blocks, and doubling that up with direct object-state tracking can
-        pull the robot two directions at once whenever they disagree. The
-        ADMM consensus penalty is *not* added here -- the ADMM layer adds it.
+        orientation or height for a point/disc robot to shape. The ADMM
+        consensus penalty is *not* added here -- the ADMM layer adds it.
         """
         pose = state.object_pose
         robot = state.robot_pos
@@ -404,7 +400,9 @@ class PushT2D(ConsensusTask):
         clearance = self.obstacle_field.hinge_cost(
             robot[None, :], self.w_obstacle_robot, self.obstacle_margin
         )
-        return effort + approach + align + clearance
+        ell_o = se2_distance_sq(pose, self.goal, self.q_pos, self.q_theta)
+        ell_c = se2_distance_sq(pose, obj_ref_t, self.q_pos, self.q_theta)
+        return effort + approach + align + clearance + ell_o + ell_c
 
     def robot_terminal_cost(self, state: Sim2DState) -> jax.Array:
         """Heavier goal tracking, matching the object block's terminal cost."""

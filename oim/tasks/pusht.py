@@ -418,23 +418,17 @@ class PushT(Task, ConsensusTask):
     def robot_running_cost(
         self, state: mjx.Data, control: jax.Array, obj_ref_t: jax.Array
     ) -> jax.Array:
-        """Robot stage cost J_r = r_r||u||^2 + ℓ_r.
+        """Robot stage cost J_r = r_r||u||^2 + ℓ_o + ℓ_r + ℓ_c (paper eq. 17).
 
-        Paper eq. 17 also adds ℓ_o (goal) and ℓ_c (coupling to the object
-        plan) here, but that paper has no ADMM: those terms are its only
-        mechanism tying the robot block to the object block. Here the
-        consensus penalty already does that, on the wrench -- keeping ℓ_o/ℓ_c
-        as well means the robot is pulled toward the object's state directly
-        *and* toward matching its wrench, which can disagree during a
-        transient instead of leaving disagreement to the consensus/dual
-        update. The ADMM consensus penalty is *not* added here -- the ADMM
-        layer adds it with the same `ConsensusSpace.penalty_cost` the object
-        block uses.
+        The ADMM consensus penalty is *not* added here -- the ADMM layer adds
+        it with the same `ConsensusSpace.penalty_cost` the object block uses.
         """
         pose = self._block_pose(state)
         pusher_pos = self._pusher_pos(state)
+        ell_o = se2_distance_sq(pose, self.goal, self.q_pos, self.q_theta)
         ell_r = self._ell_r(state, pose, pusher_pos, obj_ref_t)
-        return self.r_r * jnp.sum(control**2) + ell_r
+        ell_c = se2_distance_sq(pose, obj_ref_t, self.q_pos, self.q_theta)
+        return self.r_r * jnp.sum(control**2) + ell_o + ell_r + ell_c
 
     def robot_terminal_cost(self, state: mjx.Data) -> jax.Array:
         """Heavier goal tracking, matching the object block's ℓ_f."""

@@ -470,24 +470,24 @@ where $b_j(x^o)$ are the object's footprint boundary samples in the world
 frame and $\delta$ is the clearance margin. The clearance term is geometric,
 not a simulator contact force: the object block has no simulator.
 
-**Robot block** — the task's own cost, with **no** consensus penalty (the
-ADMM layer adds that, via the same function the object block uses):
+**Robot block** — the task's own cost, plus the ADMM consensus penalty
+(added by the ADMM layer, via the same function the object block uses):
 
 ```math
-J_r(x^r_t, u^r_t) = r_r \|u^r_t\|^2 + \ell_r(x^r_t) .
+J_r(x^r_t, u^r_t) = r_r \|u^r_t\|^2
++ \underbrace{d^2_{q}(x^o_t, g)}_{\text{goal}}
++ \underbrace{d^2_{q}(x^o_t, x^{o*}_t)}_{\ell_c,\ \text{coupling}}
++ \ell_r(x^r_t) ,
 ```
 
-Paper eq. 17 also adds $d^2_q(x^o_t, g)$ (goal) and the coupling term
-$\ell_c = d^2_q(x^o_t, x^{o*}_t)$ against the object planner's own nominal
-trajectory $x^{o*}_t$ — but that paper has no ADMM, so those two terms are
-its *only* mechanism coupling the robot block to the object block. Here the
-consensus penalty already couples the two, on the wrench; keeping $\ell_o$
-and $\ell_c$ as well meant the robot was pulled toward the object's state
-directly *and* toward matching its wrench, which can disagree during a
-transient rather than leaving disagreement to the consensus/dual update to
-resolve. Dropped from `robot_running_cost` on both sides. $\ell_r$ shares
-its first two terms across the two worlds and differs only where the
-embodiment forces it to:
+matching paper eq. 17: $x^{o*}_t$ is the object planner's own nominal
+trajectory from this ADMM iteration. The wrench consensus is a dense,
+per-step signal but an indirect one; goal-tracking is the sparse, direct
+signal the task actually cares about. Both solvers carry it so that
+tracking error cannot accumulate unchecked between the (coarser) points
+where the two actually agree on a wrench. $\ell_r$ shares its first two
+terms across the two worlds and differs only where the embodiment forces
+it to:
 
 ```math
 \ell_r = \underbrace{w_{ee}\max\big(\|p^{ee}_t - p^o_t\|^2 - r_0^2,\ 0\big)
@@ -757,7 +757,7 @@ class MyTask(Task, ConsensusTask):
     object_terminal_cost()     # l_f
     object_state_from_robot()  # pull x^o out of the robot's MJX state
     realized_consensus()       # A^r: extraction map, read from the rollout
-    robot_running_cost()       # J_r = l_r  (no ADMM penalty!)
+    robot_running_cost()       # J_r = l_o + l_r + l_c  (no ADMM penalty!)
     robot_terminal_cost()
 ```
 
