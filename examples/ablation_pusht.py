@@ -1,18 +1,14 @@
 """Compare ADMM against flat MPPI/PS baselines on the identical task.
 
-Reports the metrics the OI-MPPI paper itself uses (`Documentation/
-IROS2026.pdf`, Sec. VI, via `oim.utils.metrics`): success rate, position
-error (over all trials and over successful trials only), mean planning
-frequency, and execution time. Every method runs against literally the
-same `PushT(clutter=True, robot="point")` task with the same robot-level
-sampler budget (samples, noise, temperature, plan horizon, knots) --
-ADMM's only structural advantage over the flat baselines is the object-
-level reference trajectory and wrench consensus, not a bigger search.
+Reports the OI-MPPI paper's own metrics (`Documentation/IROS2026.pdf`,
+Sec. VI, via `oim.utils.metrics`): success rate, position error (all
+trials and successful trials only), mean planning frequency, execution
+time. Every method runs the same `PushT(clutter=True, robot="point")`
+task with the same robot-level sampler budget, so ADMM's only advantage
+over the flat baselines is the object-level reference and consensus.
 
-Scope, stated rather than hidden: trials vary only the RNG seed, not the
-starting pose the paper's own trials vary -- `PushT(clutter=True)` has one
-fixed start configuration today. Runs `robot="point"` only; `xarm6` would
-need its own (much slower) pass.
+Scope: trials vary only the RNG seed, not starting pose (`PushT(clutter=
+True)` has one fixed start today); `robot="point"` only.
 
     uv run python examples/ablation_pusht.py --trials 5 --steps 200
 """

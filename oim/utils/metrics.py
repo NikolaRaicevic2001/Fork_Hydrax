@@ -2,17 +2,13 @@
 
 Definitions follow the OI-MPPI paper (`Documentation/IROS2026.pdf`, Sec.
 VI): success rate (SR), position error (eps_d, eps_d^s), control frequency
-(f_bar), and total execution time (T). This module only aggregates numbers
-already present in a `run_2d`/`run_3d_admm` log dict (or any log with the
-same `pos_err`/`theta_err`/`reached`/`compute_time` keys) -- it does not run
-anything itself; pair it with a driver that repeats trials under different
-seeds/methods and collects their logs.
+(f_bar), and total execution time (T). Aggregates numbers already present
+in a `run_2d`/`run_3d_admm`/`run_3d_plain` log dict; does not run anything.
 
-One difference from the paper, stated rather than hidden: `T` there is wall-
-clock time on real hardware. Here `execution_time` is *simulated* task time
-(`steps_run * dt`), since that is what is reproducible independent of
-machine load; wall-clock planning cost is `mean_frequency_hz` instead,
-computed from `compute_time` (present when the driver measured it).
+`execution_time` is simulated task time (`steps_run * dt`), not the
+paper's wall-clock hardware time -- reproducible independent of machine
+load. Wall-clock planning cost is `mean_frequency_hz` instead, from
+`compute_time` when the driver logged it.
 """
 
 from typing import Any, Dict, List, Optional

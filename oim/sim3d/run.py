@@ -464,18 +464,13 @@ def run_3d_plain(
 ) -> Dict[str, Any]:
     """Run a plain (non-ADMM) controller headlessly and return a log.
 
-    The flat-baseline counterpart of `run_3d_admm`: same stepping and goal-
-    check logic, generic over any `SamplingBasedController` (e.g. `MPPI`,
-    `PredictiveSampling`) rather than requiring ADMM's residual/rho fields --
-    those controllers' params have no such thing. Built for `oim.utils.
-    metrics`'s ADMM-vs-baseline comparison, so it deliberately runs on the
-    same `task` (pass `PushT(clutter=True, ...)`, matching whatever the ADMM
-    side is being compared against) rather than `examples/pusht.py`'s plain
-    branch, which defaults to the uncluttered scene for `robot="point"`.
+    The flat-baseline counterpart of `run_3d_admm`, generic over any
+    `SamplingBasedController` since plain params carry no residual/rho
+    fields. Pass the same `task` (e.g. `PushT(clutter=True, ...)`) the
+    ADMM side runs, for a fair comparison on the identical scene.
 
     Args:
-        task: The `PushT` task (`robot="point"` or `"xarm6"`), ADMM not
-            required -- pass a task without `ConsensusTask` costs disabled.
+        task: The `PushT` task.
         ctrl: Any `SamplingBasedController` built against `task`.
         params: Its initial policy parameters.
         mj_model: The (fine-timestep) execution model.
@@ -487,10 +482,8 @@ def run_3d_plain(
         verbose: Whether to print progress.
 
     Returns:
-        A dict with `pos_err`, `theta_err`, `compute_time` (one entry per
-        control step) and `reached` -- the common subset `oim.utils.
-        metrics.trial_metrics` needs, not the full state trajectory
-        `run_3d_admm` logs.
+        A dict with `pos_err`, `theta_err`, `compute_time`, and `reached` --
+        the subset `oim.utils.metrics.trial_metrics` needs.
     """
     replan_period = 1.0 / frequency
     sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
