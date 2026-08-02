@@ -625,36 +625,6 @@ Where the implementation departs from the formulation above:
 - **Horizons.** The formulation permits $H^c \le \min(H^o, H^r)$; the
   implementation uses $H^o = H^r = H^c$, enforced in the `ADMM` constructor.
 
-### What still differs between the two worlds
-
-The formulation is now the same on both sides: same object action space
-(direct wrench), same wrench bound, same $\ell_o$, same shared terms of
-$\ell_r$ with the same weights, same $\epsilon_r, \epsilon_s$, same
-annealing setting, same $\rho$ and $\gamma$ defaults. What remains follows
-from the embodiment and is **not** drift:
-
-| | 3D (`PushT`, MJX) | 2D (`PushT2D`, analytic) |
-| --- | --- | --- |
-| Robot rollout | `MJXRollout` — `mjx.step` | `Analytic2DRollout` — `resolve_contact` |
-| State / model | `mjx.Data` / `mjx.Model` | `Sim2DState` / `Sim2DModel` |
-| Realized $A^r$ | `"contact"`: $-\,q^{\text{frc}}_{\text{constraint}}$ (point pusher; `examples/pusht.py`'s choice), or `"twist"`: $w = D^{-1}\dot{x}^o$ (`ADMM`'s own default; xarm6, where `"contact"` isn't available) | contact solver's own $J_c^\top f$, computed explicitly |
-| $\ell_r$ extras | $\psi_{\text{tilt}}$, tip height | robot–obstacle clearance hinge |
-| Actuator model | velocity servos with `kv`, `forcerange` | direct velocity, magnitude-saturated |
-
-The $A^r$ row was a genuine open question, now resolved for the point mass
-(task 10/11): 2D reads the wrench its contact solver actually computed, and
-`"twist"` *infers* one from the observed object twist through the limit
-surface instead — faithful only insofar as MJX contact behaves like that
-model, which it evidently does not closely enough to matter. Swapping to
-`"contact"` (available for the point mass since it has a literal Cartesian
-force to read off `qfrc_constraint`, unlike xarm6's hinge-joint torques)
-turned a permanent position-error plateau (0.44-0.50 m over a 600-step run,
-otherwise identical config) into reaching `goal_pos_tol` outright at one
-seed and within 0.07 m at another. xArm6 has no such direct extraction yet
-and still uses `"twist"` — see the module's own caveats in
-[`oim/tasks/pusht.py`](oim/tasks/pusht.py) for what a hinge-joint version
-of `"contact"` would need.
-
 ## Code layout
 
 ```
