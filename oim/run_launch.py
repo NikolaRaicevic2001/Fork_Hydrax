@@ -1,29 +1,14 @@
 """Config-driven launcher for push-T runs.
 
-Same coverage as `examples/pusht.py` (2D/3D, every algorithm, single runs
-and `--eval`), but every hyperparameter comes from a YAML config selected
-by `--env`, not a CLI default -- so whichever algorithms/baselines get
-compared in one launch always share the same sampler budget, execution
-model, and task physics. Its own code, not a caller of
-`examples/pusht.py` -- see `cost_formulation_and_results_eval.md` for why.
+Same coverage as `examples/pusht.py`, but every hyperparameter comes from
+`--env`'s YAML config (`oim/configs/{env}.yaml`), not a CLI default -- CLI
+flags still override it for one-off changes. Own code, not a caller of
+`examples/pusht.py`; `--world 2d` only ever runs `admm`.
 
-    # 3D ADMM, interactive viewer, oim/configs/clutter.yaml
     uv run python -m oim.run_launch admm
-
-    # 3D flat MPPI baseline on xArm6, headless
     uv run python -m oim.run_launch --world 3d --robot xarm6 mppi --headless
-
-    # 5-trial eval of ADMM + every flat baseline, clutter env
-    uv run python -m oim.run_launch --env clutter admm --eval --trials 5
-
-    # 2D ADMM (clutter scenario, from the same clutter.yaml)
+    uv run python -m oim.run_launch admm --eval --trials 5
     uv run python -m oim.run_launch --world 2d admm
-
-`--env` selects `oim/configs/{env}.yaml`, which supplies every default
-below. CLI flags still exist and override it for one-off changes, but
-omitting a flag always falls back to that file, never a Python literal.
-2D has no plain `running_cost`/`terminal_cost` (`PushT2D` implements only
-`ConsensusTask`), so `--world 2d` only ever runs `admm`.
 """
 
 import argparse
@@ -79,11 +64,7 @@ def load_config(env: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-# ---------------------------------------------------------------------------
-# Plotting -- same shapes as examples/pusht.py's, duplicated rather than
-# imported (own code, per the reasoning in
-# cost_formulation_and_results_eval.md).
-# ---------------------------------------------------------------------------
+# Plotting -- same shapes as examples/pusht.py's, duplicated not imported.
 
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
@@ -284,11 +265,7 @@ def save_animation_2d(
     print(f"saved animation to {path}")
 
 
-# ---------------------------------------------------------------------------
-# Building tasks and controllers -- every parameter from `cfg`, none from a
-# Python literal, so a single-run and an --eval run of the same method
-# always build the identical thing.
-# ---------------------------------------------------------------------------
+# Building tasks/controllers -- every parameter from `cfg`, not a literal.
 
 
 def build_sub_optimizer(
@@ -361,9 +338,8 @@ def _build_3d(
     task = PushT(
         impl="warp" if args.warp else "jax", clutter=True, planning_dt=dt,
         robot=robot,
-        # "contact" reads MuJoCo's real constraint force; "twist" infers
-        # the wrench from object motion and converges worse (task 10) --
-        # only valid for the point mass.
+        # "contact" (point-mass only) reads the real constraint force;
+        # "twist" infers wrench from motion and converges worse (task 10).
         consensus_source="contact" if robot == "point" else "twist",
     )
 
@@ -443,11 +419,6 @@ def _admm_2d(
         noise_max=cfg["admm"]["noise_max"], seed=args.seed,
     )
     return ctrl
-
-
-# ---------------------------------------------------------------------------
-# Running
-# ---------------------------------------------------------------------------
 
 
 def _run_3d_once(args: argparse.Namespace, cfg: Dict[str, Any]) -> None:
@@ -680,11 +651,6 @@ def _flat_3d_runner(
     return run
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
 def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
     """Build the parser, defaults sourced from `cfg`.
 
@@ -731,10 +697,8 @@ def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
         sp.add_argument("--seed0", type=int, default=run["seed0"])
         sp.add_argument("--seed", type=int, default=run["seed"])
         sp.add_argument("--steps", type=int, default=run["steps"])
-        # No --headless here: a flat baseline's single-run diagnostics plot
-        # and metrics file would need ADMM-only fields (residuals, rho,
-        # wrench) the flat log doesn't have -- use --eval for a flat
-        # baseline's headless/aggregate output instead.
+        # No --headless: the diagnostics plot/metrics need ADMM-only log
+        # fields a flat baseline doesn't have -- use --eval instead.
 
     admm_parser = subparsers.add_parser("admm")
     admm_parser.add_argument(

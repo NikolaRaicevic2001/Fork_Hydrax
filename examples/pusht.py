@@ -55,21 +55,17 @@ from oim.utils.metrics import aggregate_metrics
 from oim.utils.results import RunName, save_run_metrics, save_run_states
 from oim.utils.results_eval import save_eval_results
 
-# XLA's GPU command buffers (CUDA graphs) leak across ~200 iterations of a
-# closed loop and hit RESOURCE_EXHAUSTED; disabling them is XLA's own
-# suggested fix. Scoped here, not `oim/__init__.py`: doing it globally
-# breaks the Warp backend. Matters most for 2D's long closed loops, but is
-# harmless for 3D too.
+# XLA's GPU command buffers leak across long closed loops and hit
+# RESOURCE_EXHAUSTED; disabling them is XLA's fix. Not in oim/__init__.py:
+# doing it globally breaks the Warp backend.
 os.environ["XLA_FLAGS"] = (
     os.environ.get("XLA_FLAGS", "") + " --xla_gpu_enable_command_buffer="
 )
 
 SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
-# A starting joint configuration (degrees) that puts the xArm6's stick tip
-# near the block's initial position, found via
-# oim/models/xarm6_pusht_clutter/verify_reach.py's reach sweep -- not the
-# arm's own zero-config pose, which isn't anywhere near the block.
+# Joint config (degrees) putting the xArm6's stick tip near the block's
+# start; found via oim/models/xarm6_pusht_clutter/verify_reach.py.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
 
 
@@ -250,9 +246,8 @@ def plot_run_2d(
     task: PushT2D, scenario: Scenario, log: dict, path: str, stride: int = 5
 ) -> None:
     """Draw the object's swept footprint, the robot path, and diagnostics."""
-    # Imported here, not at module scope: the backend must be selected
-    # before pyplot is first imported, and keeping both local means a
-    # --no-plot run never touches matplotlib at all.
+    # Local import: backend must be selected before pyplot loads, and
+    # --no-plot then never touches matplotlib at all.
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
@@ -341,9 +336,8 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
     plan_dt = 0.05
     horizon = args.horizon
 
-    # "contact" reads MuJoCo's real constraint force; "twist" infers the
-    # wrench from object motion and measurably converges worse (task 10).
-    # Only valid for the point mass.
+    # "contact" (point-mass only) reads the real constraint force;
+    # "twist" infers wrench from motion and converges worse (task 10).
     consensus_source = "contact" if args.robot == "point" else "twist"
     task = PushT(
         impl="warp" if args.warp else "jax",
@@ -386,10 +380,8 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
         eps_s=0.5,
         proximal_weight=args.gamma,
         rho_init=args.rho,
-        # Residual-driven noise annealing (Algorithm 4 step 8) is off: the
-        # primal residual never converges for this task, so
-        # noise = clip(kappa*residual, min, max) just sits pinned near
-        # noise_max the whole time -- confirmed to make divergence worse.
+        # Noise annealing off: the primal residual never converges here,
+        # so it just pins near noise_max instead of annealing anything.
         noise_min=0.0,
         noise_kappa=0.0,
         noise_max=0.0,
@@ -477,10 +469,8 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
 
 def _run_3d_flat_once(args: argparse.Namespace) -> None:
     """One interactive run of a flat (non-ADMM) baseline."""
-    # planning_dt coarsens the planner's own timestep for xarm6 (10 substeps
-    # per rollout instead of 50); only the planning model changes, execution
-    # below still steps at 0.001s. xarm6 still needs clutter=True (no
-    # non-cluttered xarm6 scene exists).
+    # Coarsens the xarm6 planner's timestep only; execution still steps at
+    # 0.001s. xarm6 always needs clutter=True (no non-cluttered scene).
     planning_dt = 0.05 if args.robot == "xarm6" else None
     task = PushT(
         impl="warp" if args.warp else "jax",
