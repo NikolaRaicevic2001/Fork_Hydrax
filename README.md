@@ -855,6 +855,137 @@ ctrl = PredictiveSampling(
 
 Rollouts then have shape `(num_randomizations, num_samples, num_time_steps, ...)`.
 
+## Running on the real xArm6
+
+`oim/real3d/` runs the same ADMM push-T controller on a physical UFACTORY
+xArm6. The planner (`ADMM.optimize`), the task cost and the MJX rollouts are
+reused verbatim from the simulation path; only the outer loop's I/O changes:
+
+```
+sim3d:  mjx_data <- mj_data ;      mj_data.ctrl = u ; mujoco.mj_step(...)
+real3d: mjx_data <- ROS sensors ;  publish u to the arm's velocity controller
+```
+
+| File | Role |
+| --- | --- |
+| [`oim/real3d/interface.py`](oim/real3d/interface.py) | `RobotWorldInterface` (the I/O seam): `MujocoMockInterface` for laptop testing, `Ros2Interface` for hardware |
+| [`oim/real3d/run_real.py`](oim/real3d/run_real.py) | the closed loop -- the hardware counterpart of `sim3d/run.py::_run` |
+| [`examples/pusht_real.py`](examples/pusht_real.py) | entry point; same controller build as `examples/pusht.py` |
+
+MJX is still used on hardware -- it is the planner's internal predictive model,
+run on the GPU every control step. Because the planner is a plain jitted JAX
+function, it is called in-process; unlike the Isaac-Gym OI-MPPI stack there is
+no zerorpc planner server (that was a workaround for Isaac's per-process sim
+context, which MJX does not need).
+
+### Laptop dry-run (no hardware)
+
+Drives a MuJoCo sim through the hardware interface, so the whole loop -- state
+assembly, command mapping, logging -- is validated with no robot and no ROS:
+
+```bash
+python examples/pusht_real.py --mock --steps 200
+# hold vs. stream the plan within each replanning period:
+python examples/pusht_real.py --mock --command-mode stream --steps 200
+```
+
+CPU JIT is slow (~100 s/control step); use it to check plumbing, not behaviour.
+The run writes `oim/results/pusht3d_xarm6_mock_admm_*_states_*.json`, the same
+schema a simulation run produces, so the two can be compared entry-for-entry.
+
+### Environment (read first)
+
+Collapsing OI-MPPI's two planner-side processes into one means `pusht_real.py`
+needs **one environment with both ROS 2 (`rclpy`, `tf2_ros`) and the CUDA JAX
+stack (`jax[cuda13]`, `mujoco-mjx`, `oim`)**. The catch: ROS 2 Humble ships
+`rclpy` for Python 3.10, but `oim`/JAX 0.8 need Python ≥ 3.12, so you cannot
+just `source /opt/ros/humble/setup.bash` into the uv venv. Two workable paths:
+
+- **pixi / RoboStack (recommended).** [`oim/real3d/pixi.toml`](oim/real3d/pixi.toml)
+  pins `ros-humble-rclpy` + CUDA JAX + MJX in one env: `cd oim/real3d && pixi
+  install && pixi shell`, add the repo to `PYTHONPATH`, run `pusht_real.py`
+  there. This single-env resolve is the riskiest step (conda ROS + pypi
+  CUDA-JAX) -- timebox it.
+- **Two-process fallback (ready).** If that env won't resolve, run the ROS I/O
+  and the planner in separate envs, bridged by a localhost socket -- OI-MPPI's
+  split, minus zerorpc:
+
+  ```bash
+  # ROS env (pixi humble): holds all the rclpy I/O
+  python -m oim.real3d.ros_bridge --port 5599
+  # JAX env: planner talks to the bridge, no rclpy imported here
+  python examples/pusht_real.py --socket --bridge-port 5599 --replan-rate 2.5
+  ```
+
+  `oim/real3d/ros_bridge.py` wraps the same `Ros2Interface`; `--socket`
+  swaps `pusht_real.py` onto a `SocketInterface`. The `RobotWorldInterface`
+  seam is what makes this a drop-in.
+
+### Running on the robot
+
+FoundationPose runs on the **perception laptop** as its own stack (its own
+repo, Docker, conda `my` env -- camera + mask + pose node + TF broadcaster;
+see its readme). It publishes the `fp_object_pose` TF, which `Ros2Interface`
+reads by default (`object_frame`; use `"sam6d_object"` for SAM-6D).
+
+Laptop and desktop are two machines, so bridge their ROS 2 over the LAN first:
+on **both**, in every terminal, `source oim/real3d/scripts/setup_dds_env.sh`
+(fill in the interface + peer IP in
+[`config/cyclonedds.xml`](oim/real3d/config/cyclonedds.xml)), then check
+`ros2 topic list` shows the other host.
+
+On the **desktop**, three terminals:
+
+| Terminal | Command |
+| --- | --- |
+| robot bringup (`keti_ws` docker) | `ros2 launch main real_xarm6.launch.py` |
+| planner / driver (pixi env) | `python examples/pusht_real.py --dry-run --replan-rate 2.5 --steps 400` |
+| RViz (optional) | `rviz2 -d <config>.rviz` |
+
+Start with `--dry-run` (publishes to `..._nominal`, no motion) to check state,
+TF and planned velocities in RViz; drop it to command the arm. Other flags:
+`--velocity-topic`, `--replan-rate`, `--command-mode {hold,stream}`,
+`--control-rate`, `--warp`.
+
+### Bring-up & calibration checklist
+
+The mock validates everything except the physical setup. On the robot, verify:
+
+- **World frame / the base TF link.** FoundationPose's TF chain
+  `xarm_device → camera → fp_object_pose` is rooted at the robot base, but the
+  planner wants the object in the MJX world (arm base at `XARM6_BASE_POS=(0.2,
+  0.75)`, yaw −90°). `Ros2Interface` publishes this `world → xarm_device`
+  transform itself (`_publish_base_tf`, from the same model constants), so no
+  separate node is needed -- just set `base_z` to the real base height and
+  confirm the yaw sign by jogging, then check in RViz that object/goal/obstacles
+  land at their MJCF coordinates.
+- **Joint mapping.** Jog each joint and confirm `joint{i}` ↔ `xarm6_joint{i}`
+  and the sign convention (CW = +) match the model.
+- **joint6.** Set the real wrist-roll joint to the angle it is welded at in the
+  MJX scene (the planner commands it 0).
+- **Object yaw.** Confirm the FoundationPose yaw sign matches the block's `T_z`
+  hinge (`TODO(lab)` in `_lookup_object_se2`).
+- **Physics params.** Match `PlanarPushingObject(mu, mass, limit_surface_radius)`
+  in `oim/tasks/pusht.py` to the real block/table, or the planner's object
+  prediction will drift from reality.
+- **Start pose.** Check `XARM6_START_QPOS_DEG` puts the stick tip at the block
+  and is collision-free.
+
+### Real-time and speed
+
+`ADMM.optimize` is ~0.36 s/step on the lab GPU, so the arm replans at ~2.5 Hz
+versus 20 Hz in sim -- an 8× coarser control rate that is a real sim-to-real
+factor, not just calibration. Staged plan:
+
+1. **Single-thread + hold @ ~2.5 Hz** (default) -- get the first closed-loop push.
+2. **`--command-mode stream`** -- if motion is jerky at the low replan rate.
+3. **Speed up `optimize`** -- try `--warp`; lower `num_samples` /
+   `num_randomizations`; make the *planning* model cheaper than the execution
+   model (fewer `iterations`/`ls_iterations`, simpler collision geoms in the
+   rollout MJCF, shorter horizon). Validate each against the mock.
+4. **Async driver** -- a planner thread posting the latest plan to a high-rate
+   streaming loop -- only if 2–4 are not enough.
+
 ## Citation
 
 If you use this work, please cite:

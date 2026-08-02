@@ -1,0 +1,48 @@
+# Planner/driver environment for the real robot: ROS 2 (rclpy) + CUDA JAX + MJX
+# in ONE env, so pusht_real.py can be both the rclpy node and the planner.
+#
+# Why this file exists: ROS 2 Humble's apt rclpy is built for Python 3.10, but
+# oim/JAX need >= 3.11, so you cannot source /opt/ros/humble into the uv venv.
+# RoboStack ships ros-humble-* as conda packages built for the Python you pick,
+# which lets both stacks share one env. The lab already runs ros2_interface
+# under pixi, so this fits the existing workflow.
+#
+# Setup:
+#   cd oim/real3d && pixi install && pixi shell
+#   export PYTHONPATH=/path/to/Object-Informed-Manipulation-MJX:$PYTHONPATH
+#   # (adding the repo to PYTHONPATH imports `oim` without pip-installing it,
+#   #  which sidesteps the requires-python>=3.12 pin in pyproject.toml)
+#   python examples/pusht_real.py --dry-run --replan-rate 2.5 --steps 400
+#
+# RISK: this single-env resolve is the one step I can't verify without the lab
+# (conda ROS + pypi CUDA-JAX is a fiddly combo). Timebox it. If it won't
+# resolve, use the two-process fallback (a SocketInterface in the Humble env
+# talking to the planner in a separate JAX env) -- the RobotWorldInterface seam
+# makes that a drop-in, same as OI-MPPI's split.
+
+[project]
+name = "oim-real"
+channels = ["conda-forge", "robostack-staging"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.11.*"
+pip = "*"
+ros-humble-rclpy = "*"
+ros-humble-tf2-ros = "*"
+ros-humble-sensor-msgs = "*"
+ros-humble-geometry-msgs = "*"
+ros-humble-std-msgs = "*"
+
+[pypi-dependencies]
+# CPU JAX by default; on the desktop GPU swap to: jax = { version = ">=0.8.0", extras = ["cuda13"] }
+jax = ">=0.8.0"
+mujoco = ">=3.8.0"
+mujoco-mjx = ">=3.8.0"
+scipy = "*"
+# oim controller-build deps, pinned to match uv.lock (jax 0.8 compatible):
+flax = "==0.12.4"
+optax = "==0.2.6"
+chex = "==0.1.91"
+evosax = "==0.2.0"
+interpax = "==0.3.12"
