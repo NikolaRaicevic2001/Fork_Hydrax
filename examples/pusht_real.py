@@ -130,16 +130,18 @@ def build_mock_interface(task, control_rate):
     return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send)
 
 
-def build_real_interface(task, velocity_topic):
+def build_real_interface(task, velocity_topic, enable_commands):
     """The real ROS2 <-> xArm6 bridge. Import is lazy so --mock needs no ROS.
 
-    Defaults (frames, joint naming, watchdog) are set from the OI-MPPI
-    reference in Ros2Interface.__init__; only the command topic is passed
-    through here so `--dry-run` can redirect it to a non-motor topic.
+    Frames, joint naming and watchdog default from the OI-MPPI reference in
+    Ros2Interface.__init__. `enable_commands=False` is the dry run (reads
+    state/TF, publishes nothing).
     """
     from oim.real3d.interface import Ros2Interface  # noqa: PLC0415
 
-    return Ros2Interface(velocity_command_topic=velocity_topic)
+    return Ros2Interface(
+        velocity_command_topic=velocity_topic, enable_commands=enable_commands
+    )
 
 
 def main():
@@ -155,11 +157,15 @@ def main():
                    help="hold a constant velocity per period, or stream the plan")
     p.add_argument("--warp", action="store_true",
                    help="use the MuJoCo Warp rollout backend (speed A/B)")
-    p.add_argument("--velocity-topic", default="velocity_controller/commands",
-                   help="topic to publish arm velocity commands to")
+    p.add_argument("--velocity-topic",
+                   default="velocity_controller/commands_nominal",
+                   help="topic to publish to. Default feeds the CBF safety "
+                        "filter (commands_nominal -> CBF -> commands); the arm "
+                        "moves (filtered) when the CBF node is up")
     p.add_argument("--dry-run", action="store_true",
-                   help="publish to <velocity-topic>_nominal (no motion): plan "
-                        "and watch in RViz without commanding the arm")
+                   help="publish no command at all (no motion), like OI-MPPI's "
+                        "enable_velocity_commands:=false; state/TF are still "
+                        "read so you can watch the plan in RViz")
     p.add_argument("--socket", action="store_true",
                    help="two-process fallback: talk to oim.real3d.ros_bridge "
                         "over a socket instead of importing rclpy here")
@@ -185,11 +191,11 @@ def main():
         interface = SocketInterface(args.bridge_host, args.bridge_port)
         real_time = True
     else:
-        # Dry run: publish to a *_nominal topic that is not wired to the
-        # motors, so perception + planning can be checked in RViz without
-        # moving the arm (mirrors OI-MPPI's enable_velocity_commands=false).
-        topic = args.velocity_topic + ("_nominal" if args.dry_run else "")
-        interface = build_real_interface(task, topic)
+        # Normal path publishes to the CBF filter's input (commands_nominal),
+        # and the CBF node drives the motors. --dry-run publishes nothing.
+        interface = build_real_interface(
+            task, args.velocity_topic, enable_commands=not args.dry_run
+        )
         real_time = True
 
     try:

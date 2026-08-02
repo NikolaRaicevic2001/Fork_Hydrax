@@ -201,7 +201,8 @@ class Ros2Interface(RobotWorldInterface):
         base_frame: str = "xarm_device",
         base_z: float = 0.0,
         joint_states_topic: str = "/joint_states",
-        velocity_command_topic: str = "velocity_controller/commands",
+        velocity_command_topic: str = "velocity_controller/commands_nominal",
+        enable_commands: bool = True,
         twist_filter_alpha: float = 0.4,
         watchdog_timeout: float = 1.0,
     ) -> None:
@@ -221,6 +222,9 @@ class Ros2Interface(RobotWorldInterface):
         self._object_frame = object_frame
         self._alpha = twist_filter_alpha
         self._watchdog_timeout = watchdog_timeout
+        # False = never publish a command (dry run), the same no-motion path as
+        # OI-MPPI's enable_velocity_commands:=false. State/TF are still read.
+        self._enable_commands = enable_commands
 
         # Latest arm state, filled by the subscription callback. Guarded by a
         # lock because rclpy spins on a background thread (see below).
@@ -348,6 +352,8 @@ class Ros2Interface(RobotWorldInterface):
         )
 
     def send_velocity(self, u: np.ndarray) -> None:
+        if not self._enable_commands:  # dry run: read state/TF, publish nothing
+            return
         # The planner emits 5 velocities; the real velocity controller expects
         # 6, with the welded wrist-roll joint6 commanded to 0 (the same
         # "hack for only first 5 joints" the OI-MPPI interface uses).
@@ -359,6 +365,8 @@ class Ros2Interface(RobotWorldInterface):
 
     def _watchdog(self) -> None:
         """Zero the arm if no fresh command arrived within the timeout."""
+        if not self._enable_commands:
+            return
         if time.monotonic() - self._last_cmd_time > self._watchdog_timeout:
             msg = self._Float64MultiArray()
             msg.data = [0.0] * (len(ROS_ARM_JOINT_NAMES) + 1)

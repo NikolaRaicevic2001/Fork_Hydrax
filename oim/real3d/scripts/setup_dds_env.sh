@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
 # Source this (`. setup_dds_env.sh`) in EVERY ROS terminal on BOTH machines
-# (perception laptop running FoundationPose, and the desktop running the
-# planner) so their ROS 2 topics + TF talk to each other over the LAN.
+# (perception laptop + planner desktop) so their ROS 2 topics + TF connect over
+# the LAN. This documents the recurring cross-machine setup so it isn't
+# tribal knowledge -- but it does only the necessary part.
 #
-# This is the recurring cross-machine setup from OI-MPPI. Get all three right
-# or discovery silently fails (nodes see nothing from the other host):
-#   1. same RMW (CycloneDDS),
-#   2. same ROS_DOMAIN_ID,
-#   3. a CYCLONEDDS_URI whose <Peer> is the other host and whose interface is
-#      this host's LAN interface (edit config/cyclonedds.xml first).
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
+# On a shared subnet, CycloneDDS discovers peers over multicast on its own;
+# you only need these env vars matched on both hosts:
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}     # set the SAME number on both machines
-export CYCLONEDDS_URI="file://${HERE}/../config/cyclonedds.xml"
+export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}   # SAME number on both machines
+export ROS_LOCALHOST_ONLY=0                 # allow off-host traffic
 
-echo "[dds] RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION"
-echo "[dds] ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
-echo "[dds] CYCLONEDDS_URI=$CYCLONEDDS_URI"
-echo "[dds] verify cross-machine: 'ros2 topic list' should show the other host's"
-echo "      topics (e.g. /object_pose, /joint_states); 'ros2 topic echo /tf' should"
-echo "      carry fp_object_pose. If empty, check the interface name + Peer IP in"
-echo "      config/cyclonedds.xml and that both hosts are on the same subnet."
+echo "[dds] RMW=$RMW_IMPLEMENTATION  ROS_DOMAIN_ID=$ROS_DOMAIN_ID  LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY"
+echo "[dds] check: 'ros2 topic list' should show the other host's topics"
+echo "      (e.g. /object_pose, /joint_states), and 'ros2 topic echo /tf' should"
+echo "      carry fp_object_pose."
+
+# OPTIONAL fallback -- only if the above is not enough (multiple NICs so DDS
+# picks the wrong interface, or the router blocks multicast). Then edit
+# ../config/cyclonedds.xml (interface name + peer IP) and uncomment:
+#   HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#   export CYCLONEDDS_URI="file://${HERE}/../config/cyclonedds.xml"

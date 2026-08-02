@@ -928,11 +928,12 @@ repo, Docker, conda `my` env -- camera + mask + pose node + TF broadcaster;
 see its readme). It publishes the `fp_object_pose` TF, which `Ros2Interface`
 reads by default (`object_frame`; use `"sam6d_object"` for SAM-6D).
 
-Laptop and desktop are two machines, so bridge their ROS 2 over the LAN first:
-on **both**, in every terminal, `source oim/real3d/scripts/setup_dds_env.sh`
-(fill in the interface + peer IP in
-[`config/cyclonedds.xml`](oim/real3d/config/cyclonedds.xml)), then check
-`ros2 topic list` shows the other host.
+Laptop and desktop are two machines, so connect their ROS 2 over the LAN
+first: on **both**, in every terminal, `source oim/real3d/scripts/setup_dds_env.sh`
+(matches `RMW_IMPLEMENTATION` + `ROS_DOMAIN_ID`; on a shared subnet CycloneDDS
+discovers over multicast, so no XML is needed). Then check `ros2 topic list`
+shows the other host. Only if that fails (multiple NICs / multicast blocked)
+fall back to [`config/cyclonedds.xml`](oim/real3d/config/cyclonedds.xml).
 
 On the **desktop**, three terminals:
 
@@ -942,8 +943,12 @@ On the **desktop**, three terminals:
 | planner / driver (pixi env) | `python examples/pusht_real.py --dry-run --replan-rate 2.5 --steps 400` |
 | RViz (optional) | `rviz2 -d <config>.rviz` |
 
-Start with `--dry-run` (publishes to `..._nominal`, no motion) to check state,
-TF and planned velocities in RViz; drop it to command the arm. Other flags:
+The driver publishes to `velocity_controller/commands_nominal` by default,
+which feeds the **CBF safety filter** (`commands_nominal` → CBF node →
+`commands` → motors) -- so with the CBF node up, the arm moves (filtered).
+`--dry-run` instead publishes to a dead `_dryrun` topic nothing subscribes to,
+so the arm stays still while you inspect state / TF / planned velocities in
+RViz; real no-motion also means the CBF node down or an e-stop. Other flags:
 `--velocity-topic`, `--replan-rate`, `--command-mode {hold,stream}`,
 `--control-rate`, `--warp`.
 
