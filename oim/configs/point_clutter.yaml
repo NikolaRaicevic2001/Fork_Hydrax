@@ -1,4 +1,5 @@
-# Hyperparameters for the "clutter" environment, read by oim/run_launch.py.
+# Hyperparameters for the "point_clutter" environment (point-mass 3D robot,
+# clutter scene), read by oim/run_launch.py.
 #
 # Every algorithm/baseline run_launch.py builds for this env pulls its
 # parameters from here -- a single-run and an --eval run of the same
@@ -6,9 +7,11 @@
 # comparing the same sampler budget, not whatever a CLI flag happened to be
 # set to that day.
 #
-# --env selects this file (oim/configs/{env}.yaml). Only "clutter" exists
-# right now; future envs (e.g. a 3D obstacle layout, or another 2D scenario
-# combined with its own physics) get their own file the same shape.
+# --env selects this file (oim/configs/{env}.yaml). Renamed from
+# "clutter.yaml" (task 11/12) once xArm6 tuning needed its own file
+# (oim/configs/xarm6_clutter.yaml) rather than sharing one with the point
+# robot -- the 2D scenario/physics fields below are unaffected by either
+# robot's 3D tuning and stay shared.
 
 world3d:
   robot: point # point | xarm6

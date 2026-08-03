@@ -725,7 +725,7 @@ def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
 def main() -> None:
     """Parse `--env`, load its config, then parse the full CLI."""
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--env", default="clutter")
+    pre.add_argument("--env", default="point_clutter")
     pre_args, _ = pre.parse_known_args()
     cfg = load_config(pre_args.env)
 
