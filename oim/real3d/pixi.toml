@@ -12,25 +12,28 @@
 #   pip install -e /path/to/Object-Informed-Manipulation-MJX --no-deps
 #   python examples/pusht_real.py --replan-rate 2.5 --steps 400
 
-[project]
+[workspace]
 name = "oim-real"
 channels = ["conda-forge", "robostack-staging"]
 platforms = ["linux-64"]
 
 [dependencies]
+numpy = "<2.4.0"
 python = "3.12.*"   # robostack-staging ships ros-humble built for 3.12
 pip = "*"
-ros-humble-rclpy = "*"
-ros-humble-tf2-ros = "*"
-ros-humble-sensor-msgs = "*"
-ros-humble-geometry-msgs = "*"
-ros-humble-std-msgs = "*"
+# ros-base bundles rclpy + the full ros2 CLI (topic/node/echo/...) + tf2 +
+# common_interfaces (sensor/geometry/std/visualization msgs), so the driver,
+# the marker script, and `ros2 topic list` all work from one dependency.
+ros-humble-ros-base = "*"
+ros-humble-tf2-tools = "*"   # view_frames / tf2_echo for TF debugging
 
 [pypi-dependencies]
-# CPU JAX by default; on the desktop GPU swap to: jax = { version = ">=0.8.0", extras = ["cuda13"] }
-jax = ">=0.8.0"
-mujoco = ">=3.8.0"
-mujoco-mjx = ">=3.8.0"
+# Pinned to uv.lock: mujoco-mjx >= 3.9 dropped the nconmax/naconmax args that
+# oim/task_base.py passes to mjx.make_data, so exact 3.8.0 is required.
+# CPU JAX -> jax = "==0.8.3"
+jax = { version = "==0.8.3", extras = ["cuda13"] }
+mujoco = "==3.8.0"
+mujoco-mjx = "==3.8.0"
 scipy = "*"
 # oim controller-build deps, pinned to match uv.lock (jax 0.8 compatible):
 flax = "==0.12.4"

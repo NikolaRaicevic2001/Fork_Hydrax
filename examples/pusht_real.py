@@ -56,8 +56,11 @@ EXEC_TIMESTEP = 0.002  # fine execution timestep for the mock sim
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
 
 
-def build_sub_optimizer(name, task, *, plan_horizon, num_knots, spline, seed):
-    """Identical to examples/pusht.py::build_sub_optimizer (kept in sync)."""
+def build_sub_optimizer(name, task, *, plan_horizon, num_knots, spline, seed,
+                        num_samples):
+    """Like examples/pusht.py::build_sub_optimizer, but with a tunable sample
+    count -- xarm6 needs a smaller budget than the point mass (64 samples can
+    exhaust an 11 GB GPU for the arm; see oim/configs/clutter.yaml)."""
     common = dict(
         plan_horizon=plan_horizon,
         spline_type=spline,
@@ -65,15 +68,18 @@ def build_sub_optimizer(name, task, *, plan_horizon, num_knots, spline, seed):
         seed=seed,
     )
     if name == "mppi":
-        return MPPI(task, num_samples=64, noise_level=0.5, temperature=0.5, **common)
+        return MPPI(task, num_samples=num_samples, noise_level=0.5,
+                    temperature=0.5, **common)
     if name == "cem":
-        return CEM(task, num_samples=64, num_elites=8, sigma_start=0.5,
+        return CEM(task, num_samples=num_samples, num_elites=8, sigma_start=0.5,
                    sigma_min=0.1, **common)
     if name == "ps":
-        return PredictiveSampling(task, num_samples=64, noise_level=0.5, **common)
+        return PredictiveSampling(task, num_samples=num_samples,
+                                  noise_level=0.5, **common)
     if name == "cbo":
-        return CBO(task, num_samples=64, initial_noise_level=0.5, temperature=0.5,
-                   consensus_weight=1.0, noise_weight=1.0, step_size=0.1, **common)
+        return CBO(task, num_samples=num_samples, initial_noise_level=0.5,
+                   temperature=0.5, consensus_weight=1.0, noise_weight=1.0,
+                   step_size=0.1, **common)
     raise ValueError(f"unknown sub-optimizer '{name}'")
 
 
@@ -94,11 +100,12 @@ def build_controller(args):
     robot_optimizer = build_sub_optimizer(
         args.robot_opt, task, plan_horizon=HORIZON * PLAN_DT,
         num_knots=4, spline="linear", seed=args.seed,
+        num_samples=args.num_samples,
     )
     object_optimizer = build_sub_optimizer(
         args.object_opt, make_object_shim(task, dt=PLAN_DT),
         plan_horizon=HORIZON * PLAN_DT, num_knots=HORIZON, spline="zero",
-        seed=args.seed,
+        seed=args.seed, num_samples=args.num_samples,
     )
     ctrl = ADMM(
         task, robot_optimizer, object_optimizer, consensus,
@@ -108,6 +115,10 @@ def build_controller(args):
         # residual doesn't converge on this task, so it just pins at noise_max
         # rather than annealing). No consensus_relax on main either.
         noise_min=0.0, noise_kappa=0.0, noise_max=0.0,
+        # OFF: its jax.debug.print fires inside the jitted ADMM while_loop, so
+        # every iteration forces a GPU->host sync that destroys pipelining
+        # (~200 s/optimize on an RTX 2080 Ti). This is the real-time killer.
+        debug_print=False,
     )
     return task, ctrl
 
@@ -180,6 +191,9 @@ def main():
                         "over a socket instead of importing rclpy here")
     p.add_argument("--bridge-host", default="127.0.0.1")
     p.add_argument("--bridge-port", type=int, default=5599)
+    p.add_argument("--num-samples", type=int, default=16,
+                   help="rollouts per ADMM sub-optimizer (16 for xarm6; 64 can "
+                        "exhaust an 11 GB GPU)")
     p.add_argument("--n-admm", type=int, default=8)
     p.add_argument("--rho", type=float, default=10.0)
     p.add_argument("--gamma", type=float, default=0.1)

@@ -14,9 +14,9 @@ markers stay in sync with the model. Run in the ROS env:
 """
 
 import argparse
+import os
 
 import mujoco
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
@@ -34,7 +34,9 @@ class SceneMarkers(Node):
     def __init__(self, xml: str, frame: str, start) -> None:
         super().__init__("scene_markers")
         self._frame = frame
-        self._model = mujoco.MjModel.from_xml_path(xml)
+        # Absolute path: MuJoCo resolves the included meshes relative to the
+        # XML's own directory, which only works reliably from an abspath.
+        self._model = mujoco.MjModel.from_xml_path(os.path.abspath(xml))
         self._data = mujoco.MjData(self._model)
         if start is not None:  # put the block geoms at the start SE(2)
             adr = [self._model.joint(n).qposadr[0] for n in ("T_x", "T_y", "T_z")]
