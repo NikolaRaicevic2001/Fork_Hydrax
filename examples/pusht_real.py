@@ -85,6 +85,7 @@ def build_controller(args):
         planning_dt=PLAN_DT,
         robot="xarm6",
         consensus_source="twist",  # only valid estimator for an articulated arm
+        scene=args.scene,
     )
     consensus = WrenchConsensus(
         max_dual=2.0 * float(task.consensus_scale()[0]),
@@ -103,10 +104,10 @@ def build_controller(args):
         task, robot_optimizer, object_optimizer, consensus,
         n_admm=args.n_admm, eps_r=0.5, eps_s=0.5,
         proximal_weight=args.gamma, rho_init=args.rho,
-        # Hyperparameters copied verbatim from examples/pusht.py's ADMM branch
-        # (residual-relative noise anneal + damped consensus update).
-        noise_min=0.0, noise_kappa=0.3, noise_max=0.3,
-        consensus_relax=0.3,
+        # Match examples/pusht.py on main: noise annealing off (the primal
+        # residual doesn't converge on this task, so it just pins at noise_max
+        # rather than annealing). No consensus_relax on main either.
+        noise_min=0.0, noise_kappa=0.0, noise_max=0.0,
     )
     return task, ctrl
 
@@ -123,9 +124,11 @@ def build_mock_interface(task, control_rate):
     mj_model.opt.iterations = 100
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
-    # Start pose: arm near the block (reach sweep), block at the origin.
+    # Start pose: arm home config, block at the scene's start SE(2).
+    # TODO(lab): XARM6_START_QPOS_DEG was tuned for the "clutter" base; for a
+    # new scene/base, re-run the reach sweep so the tip starts near the block.
     mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
-    mj_data.qpos[5:8] = [0.0, 0.0, 0.0]
+    mj_data.qpos[5:8] = list(task.start)
     sim_steps_per_send = max(1, round((1.0 / control_rate) / EXEC_TIMESTEP))
     return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send)
 
@@ -135,12 +138,16 @@ def build_real_interface(task, velocity_topic, enable_commands):
 
     Frames, joint naming and watchdog default from the OI-MPPI reference in
     Ros2Interface.__init__. `enable_commands=False` is the dry run (reads
-    state/TF, publishes nothing).
+    state/TF, publishes nothing). `task.world_frame` selects the planner's TF
+    frame: "xarm_device" for base-at-origin scenes (reads FoundationPose's TF
+    directly, no world->base transform), or "world" otherwise.
     """
     from oim.real3d.interface import Ros2Interface  # noqa: PLC0415
 
     return Ros2Interface(
-        velocity_command_topic=velocity_topic, enable_commands=enable_commands
+        world_frame=task.world_frame,
+        velocity_command_topic=velocity_topic,
+        enable_commands=enable_commands,
     )
 
 
@@ -148,6 +155,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mock", action="store_true",
                    help="drive a MuJoCo sim instead of the real robot")
+    p.add_argument("--scene", default="clutter2",
+                   help="scene from oim.tasks.pusht.SCENES (e.g. clutter, clutter2)")
     p.add_argument("--steps", type=int, default=200, help="max control steps")
     p.add_argument("--replan-rate", type=float, default=2.5,
                    help="replanning frequency (Hz); must be <= 1/optimize time")

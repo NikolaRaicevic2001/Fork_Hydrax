@@ -22,19 +22,80 @@ from oim.task_base import ConsensusTask, Task
 GOAL = jnp.array([0.50, 0.48, jnp.pi / 4])
 
 # Static obstacles, matching the obstacle geoms in the same MJCF.
-CLUTTER_OBSTACLES = ObstacleField(
-    [
-        Circle(center=[0.08, 0.32], radius=0.04),
-        Box(center=[0.38, 0.10], half_extents=[0.04, 0.035], angle=0.25),
-        Polygon(jnp.array([[0.10, 0.42], [0.20, 0.42], [0.15, 0.52]])),
-    ]
-)
+CLUTTER_OBSTACLES = ObstacleField([
+    Circle(center=[0.08, 0.32], radius=0.04),
+    Box(center=[0.38, 0.10], half_extents=[0.04, 0.035], angle=0.25),
+    Polygon(jnp.array([[0.10, 0.42], [0.20, 0.42], [0.15, 0.52]])),
+])
 
 # xArm6 base placement (x, y, yaw about z), ground-mounted. Chosen via the
 # reach sweep in models/xarm6_pusht_clutter/verify_reach.py; covers the
 # block/goal/obstacle footprint within a few cm.
 XARM6_BASE_POS = (0.2, 0.75)
 XARM6_BASE_YAW_DEG = -90.0
+
+# Named xArm6 clutter scenes. To add an experiment layout, add one entry here
+# and its MJCF under models/ (mirrors the 2D scenarios in sim2d/scenarios.py).
+# `world_frame` is the ROS TF frame the planner's world equals: "world" needs
+# a world->xarm_device transform published (base not at the origin); a scene
+# whose base sits at the origin sets it to "xarm_device" so the object pose is
+# read straight from FoundationPose's TF tree (rooted at xarm_device).
+#
+# `block` are the T footprint half-extents/offsets (must match the MJCF geoms);
+# `mass`/`mu`/`limit_surface_radius` set the analytic object model, kept
+# consistent with the MJCF (frictionloss = mu*mass*g, torsional = that * lsr).
+SCENES = {
+    "clutter": {
+        "mjcf": "xarm6_pusht_clutter/scene.xml",
+        "base_pos": XARM6_BASE_POS,
+        "base_yaw_deg": XARM6_BASE_YAW_DEG,
+        "world_frame": "world",
+        "goal": GOAL,
+        "start": (0.0, 0.0, 0.0),
+        "obstacles": CLUTTER_OBSTACLES,
+        "block": dict(),  # default 180 mm T (matches the original MJCF)
+        "mass": 2.0,
+        "mu": 0.4,
+        "limit_surface_radius": 0.06,
+    },
+    "clutter2": {
+        "mjcf":
+            "xarm6_pusht_clutter_2/scene.xml",
+        "base_pos": (0.0, 0.0),
+        "base_yaw_deg":
+            0.0,
+        "world_frame":
+            "xarm_device",  # base at origin -> world == base
+        "goal":
+            jnp.array([0.381, -0.305, jnp.pi / 2]),
+        "start": (0.381, 0.343, 0.0),
+        "obstacles":
+            ObstacleField([
+                Box(center=[0.318, 0.178],
+                    half_extents=[0.054, 0.0445],
+                    angle=jnp.pi / 2),
+                Box(center=[0.229, -0.140],
+                    half_extents=[0.054, 0.0445],
+                    angle=jnp.pi / 2),
+                Box(center=[0.521, -0.140],
+                    half_extents=[0.054, 0.0445],
+                    angle=jnp.pi / 2),
+            ]),
+        "block":
+            dict(
+                crossbar_half=(0.0445, 0.0099),
+                stem_half=(0.0099, 0.0397),
+                crossbar_y=0.0099,
+                stem_y=-0.0397,
+            ),
+        "mass":
+            0.1,
+        "mu":
+            0.3,
+        "limit_surface_radius":
+            0.04,
+    },
+}
 
 
 class PushT(Task, ConsensusTask):
@@ -69,6 +130,7 @@ class PushT(Task, ConsensusTask):
         planning_dt: Optional[float] = None,
         robot: Literal["point", "xarm6"] = "point",
         consensus_source: Literal["twist", "contact"] = "twist",
+        scene: str = "clutter",
     ) -> None:
         """Load the MuJoCo model and set task parameters.
 
@@ -96,25 +158,28 @@ class PushT(Task, ConsensusTask):
         if consensus_source not in ("twist", "contact"):
             raise ValueError(
                 "consensus_source must be 'twist' or 'contact', got "
-                f"{consensus_source!r}"
-            )
+                f"{consensus_source!r}")
         if consensus_source == "contact" and robot != "point":
             raise ValueError(
                 "consensus_source='contact' is only valid for robot='point'; "
                 "an articulated arm's contact force appears as J^T f spread "
-                "across its joints, not at a single pair of DOFs."
-            )
+                "across its joints, not at a single pair of DOFs.")
 
         self.clutter = clutter
         self.robot = robot
         self.consensus_source = consensus_source
+        # For the xArm6 clutter task the scene (MJCF, base placement, goal,
+        # obstacles, block/friction) comes from the SCENES registry; other
+        # cases keep their original single scene.
+        self.scene_cfg = SCENES[scene] if (clutter and
+                                           robot == "xarm6") else None
         if not clutter:
-            scene = "pusht/scene.xml"
+            scene_path = "pusht/scene.xml"
         elif robot == "xarm6":
-            scene = "xarm6_pusht_clutter/scene.xml"
+            scene_path = self.scene_cfg["mjcf"]
         else:
-            scene = "pusht_clutter/scene.xml"
-        mj_model = mujoco.MjModel.from_xml_path(ROOT + "/models/" + scene)
+            scene_path = "pusht_clutter/scene.xml"
+        mj_model = mujoco.MjModel.from_xml_path(ROOT + "/models/" + scene_path)
         if planning_dt is not None:
             mj_model.opt.timestep = planning_dt
 
@@ -124,8 +189,8 @@ class PushT(Task, ConsensusTask):
             # same pattern as overriding opt.timestep above: mutate the
             # loaded mj_model before it's handed to mjx.
             base_id = mj_model.body("xarm6_link_base").id
-            mj_model.body_pos[base_id] = [*XARM6_BASE_POS, 0.0]
-            yaw = jnp.deg2rad(XARM6_BASE_YAW_DEG)
+            mj_model.body_pos[base_id] = [*self.scene_cfg["base_pos"], 0.0]
+            yaw = jnp.deg2rad(self.scene_cfg["base_yaw_deg"])
             mj_model.body_quat[base_id] = [
                 float(jnp.cos(yaw / 2)),
                 0.0,
@@ -139,11 +204,9 @@ class PushT(Task, ConsensusTask):
 
         # Sensor ids (defined identically in all three scenes).
         self.block_position_sensor = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "position"
-        )
+            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "position")
         self.block_orientation_sensor = mujoco.mj_name2id(
-            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation"
-        )
+            mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation")
 
         if clutter:
             if robot == "xarm6":
@@ -152,13 +215,11 @@ class PushT(Task, ConsensusTask):
                 # before the pusher), the composed xarm6 scene compiles the
                 # arm's 5 joints first, so the block's SE(2) pose actually
                 # lands at qpos[5:8].
-                self.block_qpos_adr = jnp.array(
-                    [
-                        mj_model.joint("T_x").qposadr[0],
-                        mj_model.joint("T_y").qposadr[0],
-                        mj_model.joint("T_z").qposadr[0],
-                    ]
-                )
+                self.block_qpos_adr = jnp.array([
+                    mj_model.joint("T_x").qposadr[0],
+                    mj_model.joint("T_y").qposadr[0],
+                    mj_model.joint("T_z").qposadr[0],
+                ])
                 self.tip_site_id = mj_model.site("xarm6_tip").id
                 self.stick_body_id = mj_model.body("xarm6_stick").id
                 self.block_body_id = mj_model.body("block").id
@@ -170,29 +231,43 @@ class PushT(Task, ConsensusTask):
             # The block's own velocity DOFs, used by the default
             # ("twist") consensus extraction. Looked up by joint name so
             # it is correct for both embodiments' qpos/qvel layouts.
-            self.block_dofs = jnp.array(
-                [
-                    mj_model.joint("T_x").dofadr[0],
-                    mj_model.joint("T_y").dofadr[0],
-                    mj_model.joint("T_z").dofadr[0],
-                ]
-            )
+            self.block_dofs = jnp.array([
+                mj_model.joint("T_x").dofadr[0],
+                mj_model.joint("T_y").dofadr[0],
+                mj_model.joint("T_z").dofadr[0],
+            ])
 
             # Analytic object-level subproblem. mu/mass are chosen so that
             # the friction-cone limit mu*m*g equals the block joints'
             # `frictionloss` in the MJCF -- the analytic model and the
-            # simulated model then describe the same physics. Same for both
-            # embodiments: this is physics of the block/table, not the
-            # pusher.
+            # simulated model then describe the same physics. For xArm6 these
+            # come from the selected scene; the point pusher keeps the
+            # original values.
+            if self.scene_cfg is not None:
+                cfg = self.scene_cfg
+                goal_v, obstacles_v = cfg["goal"], cfg["obstacles"]
+                block_v = cfg["block"]
+                mass_v, mu_v = cfg["mass"], cfg["mu"]
+                lsr_v = cfg["limit_surface_radius"]
+                self.start = cfg["start"]
+                self.world_frame = cfg["world_frame"]
+            else:
+                goal_v, obstacles_v = GOAL, CLUTTER_OBSTACLES
+                block_v = dict()
+                mass_v, mu_v, lsr_v = 2.0, 0.4, 0.06
+                self.start = (0.0, 0.0, 0.0)
+                self.world_frame = "world"
+
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
-                goal=GOAL,
-                footprint=t_shape_footprint(),
-                obstacles=CLUTTER_OBSTACLES,
-                mu=0.4,
-                mass=2.0,
-                limit_surface_radius=0.06,
+                goal=goal_v,
+                footprint=t_shape_footprint(**block_v),
+                obstacles=obstacles_v,
+                mu=mu_v,
+                mass=mass_v,
+                limit_surface_radius=lsr_v,
             )
+            self.obstacles = obstacles_v
 
             # Robot-level cost weights (paper eq. 20).
             self.r_r = 0.05
@@ -207,7 +282,7 @@ class PushT(Task, ConsensusTask):
             self.tip_target_z = float(mj_model.body("block").pos[2])
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
-            self.goal = GOAL
+            self.goal = goal_v
 
     # ------------------------------------------------------------------
     # Plain (non-ADMM) sampling-based MPC interface
@@ -216,12 +291,12 @@ class PushT(Task, ConsensusTask):
     def _get_position_err(self, state: mjx.Data) -> jax.Array:
         """Position of the block relative to the target position."""
         sensor_adr = self.model.sensor_adr[self.block_position_sensor]
-        return state.sensordata[sensor_adr : sensor_adr + 3]
+        return state.sensordata[sensor_adr:sensor_adr + 3]
 
     def _get_orientation_err(self, state: mjx.Data) -> jax.Array:
         """Orientation of the block relative to the target orientation."""
         sensor_adr = self.model.sensor_adr[self.block_orientation_sensor]
-        block_quat = state.sensordata[sensor_adr : sensor_adr + 4]
+        block_quat = state.sensordata[sensor_adr:sensor_adr + 4]
         goal_quat = jnp.array([1.0, 0.0, 0.0, 0.0])
         return mjx._src.math.quat_sub(block_quat, goal_quat)
 
@@ -261,8 +336,7 @@ class PushT(Task, ConsensusTask):
         n_geoms = self.model.geom_friction.shape[0]
         multiplier = jax.random.uniform(rng, (n_geoms,), minval=0.1, maxval=2.0)
         new_frictions = self.model.geom_friction.at[:, 0].set(
-            self.model.geom_friction[:, 0] * multiplier
-        )
+            self.model.geom_friction[:, 0] * multiplier)
         return {"geom_friction": new_frictions}
 
     def make_data(self) -> mjx.Data:
@@ -314,9 +388,8 @@ class PushT(Task, ConsensusTask):
         """Quasi-static limit-surface dynamics (paper eq. 5)."""
         return self.object_model.step(obj_state, w)
 
-    def object_running_cost(
-        self, obj_state: jax.Array, w: jax.Array
-    ) -> jax.Array:
+    def object_running_cost(self, obj_state: jax.Array,
+                            w: jax.Array) -> jax.Array:
         """Object stage cost: goal tracking + clearance + effort (eq. 18)."""
         return self.object_model.running_cost(obj_state, w)
 
@@ -375,9 +448,8 @@ class PushT(Task, ConsensusTask):
         """
         r_mat = state.site_xmat[self.trace_site_ids[0]]
         roll = jnp.arctan2(r_mat[2, 1], r_mat[2, 2])
-        pitch = jnp.arctan2(
-            -r_mat[2, 0], jnp.sqrt(r_mat[2, 1] ** 2 + r_mat[2, 2] ** 2)
-        )
+        pitch = jnp.arctan2(-r_mat[2, 0],
+                            jnp.sqrt(r_mat[2, 1]**2 + r_mat[2, 2]**2))
         return jnp.sqrt(roll**2 + pitch**2)
 
     def _tip_height_err(self, state: mjx.Data) -> jax.Array:
@@ -387,7 +459,7 @@ class PushT(Task, ConsensusTask):
         Identically zero for `robot="point"`.
         """
         z_tip = state.site_xpos[self.trace_site_ids[0], 2]
-        return (z_tip - self.tip_target_z) ** 2
+        return (z_tip - self.tip_target_z)**2
 
     def _ell_r(
         self,
@@ -401,23 +473,21 @@ class PushT(Task, ConsensusTask):
         approach + align + tilt + tip height (the last not in the paper,
         see `_tip_height_err`).
         """
-        d_ee = jnp.sum((pusher_pos - pose[:2]) ** 2)
+        d_ee = jnp.sum((pusher_pos - pose[:2])**2)
         approach = self.w_ee * jnp.clip(d_ee - self.r0**2, 0.0, None)
 
         to_object = pose[:2] - pusher_pos
         to_ref = obj_ref[:2] - pose[:2]
         cos_angle = jnp.sum(to_object * to_ref) / (
-            jnp.linalg.norm(to_object) * jnp.linalg.norm(to_ref) + 1e-6
-        )
+            jnp.linalg.norm(to_object) * jnp.linalg.norm(to_ref) + 1e-6)
         align = self.w_align * jnp.clip(self.gamma0 - cos_angle, 0.0, None)
 
         tilt = self.w_tilt * self._tilt(state)
         tip_height = self.w_tip_z * self._tip_height_err(state)
         return approach + align + tilt + tip_height
 
-    def robot_running_cost(
-        self, state: mjx.Data, control: jax.Array, obj_ref_t: jax.Array
-    ) -> jax.Array:
+    def robot_running_cost(self, state: mjx.Data, control: jax.Array,
+                           obj_ref_t: jax.Array) -> jax.Array:
         """Robot stage cost J_r = r_r||u||^2 + ℓ_o + ℓ_r + ℓ_c (paper eq. 17).
 
         The ADMM consensus penalty is *not* added here -- the ADMM layer adds
@@ -432,6 +502,5 @@ class PushT(Task, ConsensusTask):
 
     def robot_terminal_cost(self, state: mjx.Data) -> jax.Array:
         """Heavier goal tracking, matching the object block's ℓ_f."""
-        return se2_distance_sq(
-            self._block_pose(state), self.goal, self.qf_pos, self.qf_theta
-        )
+        return se2_distance_sq(self._block_pose(state), self.goal, self.qf_pos,
+                               self.qf_theta)

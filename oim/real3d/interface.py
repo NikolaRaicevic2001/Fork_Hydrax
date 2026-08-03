@@ -272,7 +272,14 @@ class Ros2Interface(RobotWorldInterface):
         self._spin_thread.start()
 
     def _publish_base_tf(self, tf2_ros, world_frame, base_frame, base_z) -> None:
-        """Broadcast the static world -> base transform from XARM6_BASE_POS."""
+        """Broadcast the static world -> base transform from XARM6_BASE_POS.
+
+        Skipped when the planner's world frame already IS the base frame
+        (base-at-origin scenes like "clutter2"): the transform is identity and
+        FoundationPose's TF tree is already rooted at the base.
+        """
+        if world_frame == base_frame:
+            return
         from geometry_msgs.msg import TransformStamped  # noqa: PLC0415
         from scipy.spatial.transform import Rotation  # noqa: PLC0415
 
