@@ -362,10 +362,23 @@ class PushT(Task, ConsensusTask):
 
         Which estimator is used is set by `consensus_source` on the task; see
         `_consensus_from_twist` (default) and `_consensus_from_contact`.
+
+        Clipped to `consensus_scale()`: a rigid-body contact solver can
+        report a one-step force or an implied velocity far past the
+        friction-cone limit at contact onset (measured up to ~16x on this
+        task), which no sustained push can exceed. Left unclipped, that
+        outlier drags the consensus average z outside the object block's own
+        feasible bound -- which it can never match, since its actions are
+        already confined to that bound -- and the resulting disagreement
+        persists for several steps after the spike itself is gone (task 10).
         """
-        if self.consensus_source == "contact":
-            return self._consensus_from_contact(state)
-        return self._consensus_from_twist(state)
+        raw = (
+            self._consensus_from_contact(state)
+            if self.consensus_source == "contact"
+            else self._consensus_from_twist(state)
+        )
+        scale = self.consensus_scale()
+        return jnp.clip(raw, -scale, scale)
 
     def _tilt(self, state: mjx.Data) -> jax.Array:
         """psi_tilt(R_ee): end-effector tilt from vertical (paper eq. 22).

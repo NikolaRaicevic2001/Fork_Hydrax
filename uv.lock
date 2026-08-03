@@ -1195,6 +1195,7 @@ dependencies = [
     { name = "mujoco-mjx" },
     { name = "pre-commit" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "warp-lang" },
 ]
@@ -1211,6 +1212,7 @@ requires-dist = [
     { name = "mujoco-mjx", specifier = ">=3.8.0" },
     { name = "pre-commit", specifier = ">=4.0.1" },
     { name = "pytest", specifier = ">=8.3.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = "==0.15.2" },
     { name = "warp-lang", specifier = ">=1.12.1,<1.13.0" },
 ]
