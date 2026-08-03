@@ -111,6 +111,19 @@ uv run python examples/pusht.py mppi
 uv run python examples/pusht.py ps
 ```
 
+Same commands via [`oim/run_launch.py`](oim/run_launch.py) (identical flags;
+hyperparameters come from `oim/configs/clutter.yaml` instead of a CLI
+default — see [Config-driven launches](#config-driven-launches)):
+
+```bash
+uv run python -m oim.run_launch admm
+uv run python -m oim.run_launch --robot xarm6 admm
+uv run python -m oim.run_launch admm --robot-opt mppi --object-opt cbo
+uv run python -m oim.run_launch --robot xarm6 admm --headless --steps 600
+uv run python -m oim.run_launch mppi
+uv run python -m oim.run_launch ps
+```
+
 Flag order matters: these go **before** the algorithm name.
 
 | Flag | Default | Meaning |
@@ -139,6 +152,15 @@ uv run python examples/pusht.py --robot xarm6 admm --show-plans
 
 # composited into the recorded video, and logged for offline review
 uv run python examples/pusht.py --robot xarm6 --record admm \
+    --headless --steps 300 --show-plans
+```
+
+Same via `oim/run_launch.py`:
+
+```bash
+uv run python -m oim.run_launch --robot xarm6 admm --show-plans
+
+uv run python -m oim.run_launch --robot xarm6 --record admm \
     --headless --steps 300 --show-plans
 ```
 
@@ -187,6 +209,15 @@ uv run python examples/pusht.py mppi --eval --trials 5 --steps 200
 uv run python examples/pusht.py --world 2d --env corridor admm --eval
 ```
 
+Same via `oim/run_launch.py` (3D `admm --eval` compares against all four
+sub-optimizers — mppi, cem, ps, cbo — not just mppi/ps):
+
+```bash
+uv run python -m oim.run_launch admm --eval --trials 5 --steps 200
+uv run python -m oim.run_launch mppi --eval --trials 5 --steps 200
+uv run python -m oim.run_launch --world 2d admm --eval
+```
+
 `--eval` runs `--trials` seeds of the chosen algorithm instead of one
 recorded run, aggregates success rate, position/orientation error
 (mean & std), frequency and execution time via
@@ -214,6 +245,20 @@ uv run python examples/pusht.py --world 2d --no-obstacles admm
 
 # A/B the contact-action object parameterization against the default
 uv run python examples/pusht.py --world 2d --contact-action admm
+```
+
+Same via `oim/run_launch.py`, except scenario switching: its `--env` selects
+*which YAML config to load* (`oim/configs/{env}.yaml`), not the 2D scenario
+directly, so `corridor`/`gate` aren't reachable this way until they get their
+own config files (only `clutter.yaml` exists today — see
+[Config-driven launches](#config-driven-launches)). Everything else,
+including the scenario `clutter.yaml` itself picks, mirrors exactly:
+
+```bash
+uv run python -m oim.run_launch --world 2d admm
+uv run python -m oim.run_launch --world 2d --no-jit admm --steps 3
+uv run python -m oim.run_launch --world 2d --no-obstacles admm
+uv run python -m oim.run_launch --world 2d --contact-action admm
 ```
 
 `--world 2d` only ever runs `admm` (see [Push-T in 3D](#push-t-in-3d)
