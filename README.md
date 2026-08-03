@@ -364,43 +364,35 @@ happened to be set to that day. It has its own code (not a caller of
 `examples/pusht.py` vs. the older `examples/ablation_pusht.py`.
 
 `--env {name}` selects `oim/configs/{name}.yaml`, which supplies every
-default below; only `clutter` exists today (one 3D scene, one 2D
+hyperparameter below; only `clutter` exists today (one 3D scene, one 2D
 scenario), but the flag is there now so a future second environment (a
 different 3D layout, or a 2D scenario bundled with its own physics) is a
-new YAML file, not a CLI change. Every other flag matches
-`examples/pusht.py`'s exactly and still works as a **one-off override** —
-omit it and the YAML value is used; pass it and that run alone uses the
-override, nothing else does.
+new YAML file, not a CLI change. The command line only ever picks *what to
+run* -- world, robot, algorithm, headless/recorded/live, eval/trials -- not
+*how*: `--samples`, `--horizon`, `--n-admm`, `--rho`, `--gamma`, `--seed`
+and the rest stay in the YAML (still overridable there, or per one-off run
+if you pass them explicitly -- see the flag tables above).
 
 ```bash
-# 3D ADMM, interactive viewer, every arg spelled out (--env is the only
-# one that isn't already in oim/configs/clutter.yaml's defaults)
-uv run python -m oim.run_launch \
-    --env clutter --world 3d --robot point --samples 64 --horizon 15 \
-    admm --robot-opt mppi --object-opt mppi --n-admm 8 --rho 10.0 \
-    --gamma 0.1 --seed 5 --steps 200
+# 3D ADMM, interactive viewer
+uv run python -m oim.run_launch --env clutter --world 3d --robot point \
+    admm --robot-opt mppi --object-opt mppi
 
-# 3D ADMM on the xArm6, headless, recorded, mixed sub-optimizers
-uv run python -m oim.run_launch \
-    --env clutter --world 3d --robot xarm6 --samples 64 --horizon 15 \
-    --record admm --robot-opt cem --object-opt cbo --n-admm 8 --rho 10.0 \
-    --gamma 0.1 --seed 5 --headless --steps 300 --show-plans
+# 3D ADMM on the xArm6, headless, recorded, mixed sub-optimizers, showing plans
+uv run python -m oim.run_launch --env clutter --world 3d --robot xarm6 \
+    --record admm --robot-opt cem --object-opt cbo --headless \
+    --steps 300 --show-plans
 
-# 3D flat CEM baseline, 5-trial eval, every eval flag explicit
-uv run python -m oim.run_launch \
-    --env clutter --world 3d --robot point --samples 64 --horizon 15 \
-    cem --eval --trials 5 --seed0 0 --steps 200
+# 3D flat CEM baseline, 5-trial eval
+uv run python -m oim.run_launch --env clutter --world 3d --robot point \
+    cem --eval --trials 5 --steps 200
 
-# 2D ADMM, every 2D-specific toggle explicit (--animate needs the plot,
-# so it isn't combined with --no-plot here)
-uv run python -m oim.run_launch \
-    --env clutter --world 2d --samples 64 --horizon 15 \
-    --contact-action --no-relocate --obstacles --animate \
-    admm --n-admm 6 --rho 10.0 --gamma 0.1 --seed 0 --steps 200
+# 2D ADMM, live
+uv run python -m oim.run_launch --env clutter --world 2d admm
 
 # 2D ADMM, 5-trial eval (2D has no flat baseline to compare against)
-uv run python -m oim.run_launch \
-    --env clutter --world 2d admm --eval --trials 5 --seed0 0 --steps 200
+uv run python -m oim.run_launch --env clutter --world 2d admm \
+    --eval --trials 5 --steps 200
 ```
 
 `oim/configs/clutter.yaml` groups every value by what it configures —
