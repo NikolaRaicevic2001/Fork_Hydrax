@@ -274,8 +274,10 @@ class PushT(Task, ConsensusTask):
             self.w_ee, self.r0 = 20.0, 0.05
             self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
             # w_tilt/w_tip_z: not in the paper, untuned, same order of
-            # magnitude as w_align/w_ee.
-            self.w_tilt = 5.0
+            # magnitude as w_align/w_ee. w_tilt raised from 5.0 now that
+            # _tilt's sign bug is fixed (task 11/12) -- at 5.0 the tip still
+            # averaged ~35 degrees off vertical.
+            self.w_tilt = 20.0
             self.w_tip_z = 50.0
             # Target tip height: the block's own resting z, read from the
             # model rather than hardcoded.
@@ -456,14 +458,22 @@ class PushT(Task, ConsensusTask):
     def _tilt(self, state: mjx.Data) -> jax.Array:
         """psi_tilt(R_ee): end-effector tilt from vertical (paper eq. 22).
 
-        From the roll/pitch of the end-effector site's rotation matrix.
-        Identically zero for `robot="point"` (no orientation DOF).
+        Angle between the tip site's z-axis and world -z (straight down --
+        the pushing stick's intended pointing direction): 0 when vertical
+        and correctly oriented, pi when upside down. Identically zero for
+        `robot="point"` (no orientation DOF).
+
+        A previous roll/pitch-based formula measured deviation from the
+        site's z-axis pointing *up*, so a correctly vertical, downward-
+        pointing stick scored ~180 degrees "tilt" instead of ~0 -- verified
+        directly against the reach-swept starting pose, whose site rotation
+        has z-axis world-frame component [0.41, -0.11, -0.90] (pointing
+        down) yet scored ~182 degrees under the old formula. `w_tilt` was
+        therefore driving the tip *away* from vertical, not toward it
+        (task 11/12).
         """
         r_mat = state.site_xmat[self.trace_site_ids[0]]
-        roll = jnp.arctan2(r_mat[2, 1], r_mat[2, 2])
-        pitch = jnp.arctan2(-r_mat[2, 0],
-                            jnp.sqrt(r_mat[2, 1]**2 + r_mat[2, 2]**2))
-        return jnp.sqrt(roll**2 + pitch**2)
+        return jnp.arccos(jnp.clip(-r_mat[2, 2], -1.0, 1.0))
 
     def _tip_height_err(self, state: mjx.Data) -> jax.Array:
         """(z_tip - tip_target_z)^2: not in the paper.
