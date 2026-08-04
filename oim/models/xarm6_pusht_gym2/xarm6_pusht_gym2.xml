@@ -14,8 +14,12 @@
        stay in sync with the geoms below, same as the clutter scene's own
        comment says for t_shape_footprint().
 
-       Goal/obstacle positions are not a literal coordinate copy -- see
-       GYM2_GOAL/GYM2_OBSTACLES in oim/tasks/pusht.py for why. -->
+       Block/goal/obstacle positions ARE a literal coordinate copy of
+       sim_task02.yaml/tee_block.yaml/block.yaml's own world-frame numbers
+       (confirmed identical across every sim_taskNN.yaml, see
+       oim/tasks/pusht.py) -- (0.7,-0.45) block start, (0.9,0.30) goal
+       (180-degree flip, quat [0,0,0,1] = pi about z), (0.9,0.05) obstacle,
+       all at the real xArm6 scale IsaacGym itself uses, not rescaled. -->
   <option timestep="0.01" gravity="0 0 -9.81" iterations="20" ls_iterations="20" integrator="implicitfast"/>
 
   <include file="../xarm6/xarm6.xml"/>
@@ -35,12 +39,12 @@
          convention as xarm6_pusht_clutter.xml. Keep in sync with
          block_crossbar/block_stem below and with
          oim.tasks.pusht.GYM2_FOOTPRINT_KW. -->
-    <body name="goal" mocap="true" pos="0.12 0.45 0.025" quat="0.825336 0 0 0.564642">
+    <body name="goal" mocap="true" pos="0.9 0.30 0.025" quat="0 0 0 1">
       <geom class="goal" name="goal_crossbar" type="box" size="0.100 0.025 0.025" pos="0.0 0.0 0.0"/>
       <geom class="goal" name="goal_stem" type="box" size="0.025 0.050 0.025" pos="0.0 -0.075 0.0"/>
     </body>
 
-    <body name="block" pos="0.0 0.0 0.025">
+    <body name="block" pos="0.7 -0.45 0.025">
       <joint name="T_x" type="slide" axis="1 0 0" frictionloss="7.848" damping="0.0"/>
       <joint name="T_y" type="slide" axis="0 1 0" frictionloss="7.848" damping="0.0"/>
       <joint name="T_z" type="hinge" axis="0 0 1" frictionloss="0.47088" damping="0.0"/>
@@ -48,9 +52,10 @@
       <geom name="block_stem" type="box" size="0.025 0.050 0.025" pos="0.0 -0.075 0.0" mass="1.0" rgba="0.2 0.45 0.85 1"/>
     </body>
 
-    <!-- Single obstacle (sim_task02's static "block" actor), half-extents
-         from that actor's own config (box, full size 0.1x0.1x0.1 m). -->
-    <geom class="obstacle" name="obs_box" type="box" size="0.05 0.05 0.025" pos="0.12 0.25 0.025"/>
+    <!-- Single obstacle (sim_task02's static "block" actor), position and
+         half-extents from that actor's own config (box, full size
+         0.1x0.1x0.1 m, init_pos [0.9, 0.05, 0.195]). -->
+    <geom class="obstacle" name="obs_box" type="box" size="0.05 0.05 0.025" pos="0.9 0.05 0.025"/>
   </worldbody>
 
   <sensor>
