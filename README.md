@@ -47,19 +47,9 @@ cheap one:
 | [`oim/run_launch.py`](oim/run_launch.py) | a sweep, one subprocess per cell | `results/sweeps/*.json` | the sweep config |
 | [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md}` | run files |
 
-<<<<<<< HEAD
 Run files hold only what was *observed*. Success, goal error, execution time
 and frequency are derived by `run_eval`, so a new metric or a stricter
 tolerance costs a second rather than a re-run.
-=======
-Two entry points take the **same flags**, so any command below runs either
-way:
-
-| | [`examples/pusht.py`](examples/pusht.py) | [`oim/run_launch.py`](oim/run_launch.py) |
-| --- | --- | --- |
-| Hyperparameters from | CLI defaults | `oim/configs/{robot}.yaml` |
-| `--env` selects | the 2D scenario | *3D:* the scene variant (`clutter`, `gym2`); same hyperparameters either way |
->>>>>>> 6b734fa98acadff2ff75e7b9de00bfaa6ab74b9f
 
 ### Single runs
 
@@ -82,15 +72,10 @@ World and scene flags go **before** the algorithm name, solver and run flags
 | `--world {3d,2d}` | `3d` | `3d`: MJX contact, point or xArm6 robot, `admm`/`mppi`/`ps`. `2d`: analytic single-point contact, disc robot, `admm` only — same ADMM code, for separating algorithm bugs from simulator bugs |
 | `--samples`, `--horizon` | 64, 15 | Rollouts per block, consensus horizon $H$ |
 | `--robot {point,xarm6}` | `point` | *3D:* embodiment; `xarm6` implies clutter |
-<<<<<<< HEAD
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
 | `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, since Warp allocates outside that pool and otherwise cannot build its CUDA graphs |
 | `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (below) |
-=======
-| `--record` | off | *3D:* mp4 (needs `ffmpeg`); combines with `--headless`, which renders offscreen |
-| `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts |
-| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario; *3D `run_launch` only:* `{clutter,gym2}` scene variant (`xarm6` only) |
->>>>>>> 6b734fa98acadff2ff75e7b9de00bfaa6ab74b9f
+| `--scene {clutter,gym2}` | `clutter` | *3D:* MJCF layout. `gym2` is the single-obstacle IsaacGym conversion and needs `--robot xarm6`. Recorded in the run identity, so `run_eval` can group on it |
 | `--contact-action` | off | *2D:* object block decides $[p, f_n, f_t]$, not the wrench ([below](#object-action-parameterization)) |
 | `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
 | ***after the algorithm*** | | |
@@ -147,7 +132,6 @@ uv run python -m oim.run_launch --warp --set steps=50  # override `fixed:`
 ### Evaluation
 
 ```bash
-<<<<<<< HEAD
 uv run python -m oim.run_eval                        # every run, auto-grouped
 
 # pick the tasks, algorithms and horizons to summarise, one row each
@@ -158,11 +142,6 @@ uv run python -m oim.run_eval \
     --group-by task algorithm horizon --format markdown
 
 uv run python -m oim.run_eval --pos-tol 0.02         # re-score, no re-running
-=======
-# 5 seeds; in 3D this also runs the flat baselines at the same sampler budget
-uv run python examples/pusht.py admm --eval --trials 5 --steps 200
-uv run python -m oim.run_launch --robot xarm6 admm --eval --trials 5
->>>>>>> 6b734fa98acadff2ff75e7b9de00bfaa6ab74b9f
 ```
 
 | | |
@@ -391,12 +370,8 @@ oim/
 │   ├── plan_overlay.py   both blocks' predicted paths, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
-<<<<<<< HEAD
 ├── run_launch.py         sweep driver;  run_eval.py  post-hoc metrics
 ├── configs/              run_launch_config.yaml (the sweep definition)
-=======
-├── configs/              point.yaml, xarm6.yaml -- one per robot, all scenes
->>>>>>> 6b734fa98acadff2ff75e7b9de00bfaa6ab74b9f
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
 └── utils/                spline, video, results.py (run files), metrics.py
 ```

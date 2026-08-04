@@ -363,6 +363,7 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
         planning_dt=plan_dt,
         robot=args.robot,
         consensus_source=consensus_source,
+        env=args.scene,
     )
     # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
     # and comparable to the task costs, so rho is a meaningful knob.
@@ -452,7 +453,7 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
             name,
             run=dict(
                 world="3d",
-                task=f"pusht3d_{args.robot}",
+                task=f"pusht3d_{args.robot}_{args.scene}",
                 robot=args.robot,
                 algorithm="admm",
                 robot_opt=args.robot_opt,
@@ -510,6 +511,7 @@ def _run_3d_flat_once(args: argparse.Namespace) -> None:
         clutter=(args.robot == "xarm6"),
         robot=args.robot,
         planning_dt=planning_dt,
+        env=args.scene,
     )
     # xArm6's per-rollout collision cost is much higher than the point
     # mass's; the point mass's defaults exhaust an 11 GB GPU for the arm.
@@ -593,7 +595,7 @@ def _run_3d_flat_headless(args: argparse.Namespace) -> None:
         name,
         run=dict(
             world="3d",
-            task=f"pusht3d_{args.robot}",
+            task=f"pusht3d_{args.robot}_{args.scene}",
             robot=args.robot,
             algorithm=args.algorithm,
             robot_opt=args.algorithm,
@@ -632,7 +634,7 @@ def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
     Same cluttered task and execution model ADMM uses, so a comparison
     isolates the object-level hierarchy.
     """
-    task = PushT(clutter=True, planning_dt=dt, robot=args.robot)
+    task = PushT(clutter=True, planning_dt=dt, robot=args.robot, env=args.scene)
     ctrl = build_sub_optimizer(
         method,
         task,
@@ -783,6 +785,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"2D only: scenario (default: {DEFAULT_SCENARIO}).",
     )
     parser.add_argument(
+        "--scene",
+        choices=["clutter", "gym2"],
+        default="clutter",
+        help="3D only: which MJCF scene. 'clutter' is the 3-obstacle "
+        "layout; 'gym2' is the single-obstacle IsaacGym conversion and "
+        "requires --robot xarm6. Separate from --env, which names a 2D "
+        "scenario.",
+    )
+    parser.add_argument(
         "--contact-action",
         action="store_true",
         help="2D only: object block decides [p, f_n, f_t], not the wrench.",
@@ -889,6 +900,12 @@ def main() -> None:
 
     if args.algorithm is None:
         args.algorithm = "ps"
+
+    if args.scene == "gym2" and (args.world != "3d" or args.robot != "xarm6"):
+        parser.error(
+            "--scene gym2 is a 3D xArm6 scene; pass --world 3d --robot xarm6 "
+            "(there is no point-mass or 2D gym2 layout)."
+        )
 
     if args.world == "2d":
         _run_2d_admm_once(args)
