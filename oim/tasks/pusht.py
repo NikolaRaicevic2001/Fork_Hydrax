@@ -42,15 +42,19 @@ XARM6_BASE_YAW_DEG = -90.0
 # T-block's own geometry (crossbar/stem half-extents and offset, below) is
 # taken directly from that repo's `assets/urdf/tee_block/tee_block.urdf` --
 # it's noticeably bigger than `t_shape_footprint()`'s clutter-scene default.
-# Goal/obstacle *positions* are not a literal coordinate copy: IsaacGym's own
-# task lives on a much larger table (goal/obstacle around x=0.9, y=0.05-0.30,
-# on a 1.4x2.5 m table) than this repo's xArm6 reach envelope (verified only
-# up to roughly x,y in [0, 0.5], see `verify_reach.py`). What's preserved is
-# the qualitative layout that gives the task its name -- one static obstacle
-# sitting on the direct path from the block's start to the goal, close to
-# the goal -- rescaled to fit inside the already-reach-verified footprint so
-# the existing `XARM6_BASE_POS` mount is reused as-is.
-GYM2_GOAL = jnp.array([0.12, 0.45, 1.2])
+#
+# Goal/obstacle *positions* are not a literal coordinate copy of
+# sim_task02.yaml's own numbers: confirmed (via docs/static/results/figures/
+# sim_tasks.png and every sim_taskNN.yaml sharing the same arm-base/block/
+# goal placement) that IsaacGym's own task lives on a much larger table than
+# this repo's xArm6 reach envelope, so a literal coordinate copy would put
+# the goal out of reach. What's reproduced faithfully is the *semantics* of
+# the reference image: a single obstacle sitting between the block's start
+# and the goal, and the goal orientation itself -- IsaacGym's goal quat
+# ([0,0,1,0] xyzw) is a 180-degree flip about z from the block's own spawn
+# orientation, which `t_shape_footprint()`'s implicit theta=0 already is, so
+# the goal's theta below is `pi`, not an arbitrary angle.
+GYM2_GOAL = jnp.array([0.12, 0.45, jnp.pi])
 GYM2_OBSTACLES = ObstacleField(
     [Box(center=[0.12, 0.25], half_extents=[0.05, 0.05], angle=0.0)]
 )
@@ -58,6 +62,15 @@ GYM2_FOOTPRINT_KW = dict(
     crossbar_half=(0.100, 0.025), stem_half=(0.025, 0.050),
     crossbar_y=0.0, stem_y=-0.075,
 )
+
+# gym2's own xArm6 mount -- distinct from XARM6_BASE_POS/YAW above, since
+# gym2's block/goal/obstacle sit in a different part of the workspace.
+# Chosen (not reach-swept) so the arm sits to the left of the obstacle,
+# reaching right across it towards the goal, per a rendered visual check:
+# base-to-block-start 0.40 m, base-to-obstacle 0.47 m, base-to-goal 0.53 m,
+# all comfortably inside the ~0.78 m reach this arm demonstrates elsewhere.
+GYM2_XARM6_BASE_POS = (-0.35, 0.20)
+GYM2_XARM6_BASE_YAW_DEG = 15.0
 
 
 class PushT(Task, ConsensusTask):
@@ -164,10 +177,15 @@ class PushT(Task, ConsensusTask):
             # Ground-mounted base placement, not baked into xarm6.xml itself
             # (that file is a reusable, placement-agnostic robot asset) --
             # same pattern as overriding opt.timestep above: mutate the
-            # loaded mj_model before it's handed to mjx.
+            # loaded mj_model before it's handed to mjx. Each scene variant
+            # has its own mount, since the workspace moves between them.
+            base_pos, base_yaw_deg = (
+                (GYM2_XARM6_BASE_POS, GYM2_XARM6_BASE_YAW_DEG) if env == "gym2"
+                else (XARM6_BASE_POS, XARM6_BASE_YAW_DEG)
+            )
             base_id = mj_model.body("xarm6_link_base").id
-            mj_model.body_pos[base_id] = [*XARM6_BASE_POS, 0.0]
-            yaw = jnp.deg2rad(XARM6_BASE_YAW_DEG)
+            mj_model.body_pos[base_id] = [*base_pos, 0.0]
+            yaw = jnp.deg2rad(base_yaw_deg)
             mj_model.body_quat[base_id] = [
                 float(jnp.cos(yaw / 2)),
                 0.0,
