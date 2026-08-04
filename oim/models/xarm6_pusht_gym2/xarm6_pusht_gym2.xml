@@ -60,12 +60,14 @@
          block/obstacle/goal laid out in a row -- matching the
          Object-Informed-Manipulation (IsaacGym) repo's own reference
          screenshots. Derived from a free camera at azimuth=180,
-         elevation=-25, distance=1.1, lookat=(-0.05, 0.375, 0.15) (the
+         elevation=-25, distance=1.7, lookat=(-0.05, 0.375, 0.15) (the
          gym2 workspace's own center, see scene.xml's <statistic>),
          converted to explicit pos/xyaxes since MJCF <camera> has no
          azimuth/elevation/distance/lookat form. Confirmed via a rendered
-         check, not derived blind. -->
-    <camera name="front" pos="0.9469 0.3410 0.6149"
+         check, not derived blind. Distance raised from the original 1.1:
+         at 1.1 the goal/block start sat almost edge-to-edge in frame,
+         with no room for the obstacles a future environment adds. -->
+    <camera name="front" pos="1.4907 0.3410 0.8685"
       xyaxes="0.0000 1.0000 -0.0000 -0.4226 0.0000 0.9063"/>
 
     <!-- Mirrors the block's geoms exactly, at the goal pose -- same
@@ -102,16 +104,17 @@
        its own starting pose here, not another branch in the launcher.
 
        A genuine rest pose, not a pose pre-placed at the block: joints
-       1/2/4/5 at zero (verify_model.py's own "zero" configuration for
-       this arm, see oim/models/xarm6/verify_model.py) with only joint 3
-       (elbow) nudged -10 degrees off zero so the tip clears the tabletop
-       (the raw zero configuration puts it ~0.02m *below* z=0, which would
-       start inside the table added below). Tip lands near
-       (0.0, 0.45, 0.02) -- close to the base, well short of the block at
-       (0, 0) -- so ADMM has to actually drive the arm out to first
-       contact, the way a real deployment would start. -->
+       1/4/5 at zero (verify_model.py's own "zero" configuration for this
+       arm, see oim/models/xarm6/verify_model.py), with joints 2/3 tipped
+       to lift the tip ~0.15m above the table -- the original -10-degree-
+       elbow-only version cleared the table by only ~0.02m, close enough
+       that the stick read as grazing/poking through it on camera. Tip
+       lands near (0.05, 0.45, 0.17) -- close to the base in xy, clearly
+       above the surface in z, well short of the block at (0, 0) -- so
+       ADMM has to actually drive the arm out to first contact, the way a
+       real deployment would start. -->
   <keyframe>
     <key name="start"
-      qpos="0.0 0.0 -0.174533 0.0 0.0 0.0 0.0 0.0"/>
+      qpos="0.0 -0.610865 -0.034907 0.0 0.0 0.0 0.0 0.0"/>
   </keyframe>
 </mujoco>
