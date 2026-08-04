@@ -21,8 +21,15 @@ comparison directly.
 import argparse
 import math
 import os
+import time
 import warnings
 from copy import deepcopy
+
+# Persist XLA compilations across runs so the minutes-long JIT warm-up only
+# happens once per config (later runs load from disk). Set before JAX is
+# imported (via the oim modules below); override with the env var if needed.
+os.environ.setdefault("JAX_COMPILATION_CACHE_DIR",
+                      os.path.expanduser("~/.cache/jax"))
 
 # Cosmetic warnings during CPU JAX tracing / MuJoCo model compile. The results
 # are unaffected (the saved states contain no NaNs); filtered here at the entry
@@ -85,6 +92,8 @@ def build_sub_optimizer(name, task, *, plan_horizon, num_knots, spline, seed,
 
 def build_controller(args):
     """Build the xArm6 PushT task + ADMM controller, exactly as in pusht.py."""
+    t = time.perf_counter()
+    print(f"[setup] loading task/scene '{args.scene}' (MJCF compile + MJX build)...")
     task = PushT(
         impl="warp" if args.warp else "jax",  # --warp: MuJoCo Warp rollout backend
         clutter=True,
@@ -93,6 +102,7 @@ def build_controller(args):
         consensus_source="twist",  # only valid estimator for an articulated arm
         scene=args.scene,
     )
+    print(f"[setup] task ready in {time.perf_counter() - t:.1f}s; building ADMM...")
     consensus = WrenchConsensus(
         max_dual=2.0 * float(task.consensus_scale()[0]),
         scale=task.consensus_scale(),
@@ -203,7 +213,9 @@ def main():
     args = p.parse_args()
 
     task, ctrl = build_controller(args)
+    print(f"[setup] cache dir: {os.environ['JAX_COMPILATION_CACHE_DIR']}")
 
+    t = time.perf_counter()
     if args.mock:
         interface = build_mock_interface(task, args.control_rate)
         real_time = False
@@ -220,6 +232,7 @@ def main():
             task, args.velocity_topic, enable_commands=not args.dry_run
         )
         real_time = True
+    print(f"[setup] interface ready in {time.perf_counter() - t:.1f}s")
 
     try:
         log = run_real(

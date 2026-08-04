@@ -99,19 +99,31 @@ def run_real(
     jit_interp = jax.jit(ctrl.interp_func)
 
     # First state + JIT warm-up before any timed loop.
+    t = time.perf_counter()
     base_data = task.make_data()
     world0 = interface.read_state()
     mjx_data = _assemble_state(task, base_data, addresses, world0)
     if verbose:
-        print("Warming up the controller (JIT compile)...")
-    t_jit = time.time()
+        print(f"[jit] initial state assembled in {time.perf_counter() - t:.1f}s; "
+              "warming up -- the first optimize traces + XLA-compiles the whole "
+              "ADMM+MJX graph (minutes; cached across runs)...")
+    # Split the two warm-up calls: the first pays compile + run, the second is
+    # a warm run -- so the log shows compile time vs pure execution time.
+    t = time.perf_counter()
     params, _ = jit_optimize(mjx_data, params)
+    jax.block_until_ready(params)
+    if verbose:
+        print(f"[jit] optimize compiled + first run: {time.perf_counter() - t:.1f}s")
+    t = time.perf_counter()
     params, _ = jit_optimize(mjx_data, params)
+    jax.block_until_ready(params)
+    if verbose:
+        print(f"[jit] optimize warm run: {time.perf_counter() - t:.3f}s "
+              "(this is the real per-step cost)")
     _ = jit_interp(jnp.array([world0.time]), params.tk, params.mean[None, ...])
     jax.block_until_ready(params)
     if verbose:
-        print(f"JIT done in {time.time() - t_jit:.2f}s; "
-              f"{'overlapped' if real_time else 'serial'} loop, "
+        print(f"[jit] ready; {'overlapped' if real_time else 'serial'} loop, "
               f"control {control_rate:.0f} Hz, {command_mode}")
 
     log = _init_log(task, mjx_data, mjx_data, show_plans=False)
