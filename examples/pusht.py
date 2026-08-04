@@ -52,6 +52,7 @@ from oim.sim3d.deterministic import run_interactive
 from oim.sim3d.run import run_3d_admm, run_3d_plain
 from oim.tasks.pusht import PushT
 from oim.utils.results import RunName, save_run
+from oim.utils.scenes import SCENES
 
 # XLA's GPU command buffers leak across long closed loops and hit
 # RESOURCE_EXHAUSTED; disabling them is XLA's fix. Not in oim/__init__.py:
@@ -830,12 +831,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scene",
-        choices=["clutter", "gym2"],
+        choices=sorted(SCENES),
         default="clutter",
-        help="3D only: which MJCF scene. 'clutter' is the 3-obstacle "
-        "layout; 'gym2' is the single-obstacle IsaacGym conversion and "
-        "requires --robot xarm6. Separate from --env, which names a 2D "
-        "scenario.",
+        help="3D only: which scene, from oim.utils.scenes.SCENES. Separate "
+        "from --env, which names a 2D scenario. A scene not built for "
+        "--robot errors at construction (PushT.__init__, via "
+        "SceneSpec.mjcf_scene).",
     )
     parser.add_argument(
         "--contact-action",
@@ -945,10 +946,11 @@ def main() -> None:
     if args.algorithm is None:
         args.algorithm = "ps"
 
-    if args.scene == "gym2" and (args.world != "3d" or args.robot != "xarm6"):
+    scene_robots = SCENES[args.scene].mjcf_by_robot
+    if args.world == "3d" and args.robot not in scene_robots:
         parser.error(
-            "--scene gym2 is a 3D xArm6 scene; pass --world 3d --robot xarm6 "
-            "(there is no point-mass or 2D gym2 layout)."
+            f"--scene {args.scene} has no scene for --robot {args.robot} "
+            f"(available: {sorted(scene_robots)})."
         )
 
     if args.world == "2d":

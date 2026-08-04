@@ -72,11 +72,12 @@ def _flag_spec() -> Tuple[Dict[str, bool], Dict[str, bool]]:
         `(top_level, per_algorithm)`, each mapping a dest name to whether
         the flag takes a value (False means a bare switch).
     """
-    # Importing pusht.py builds module-level `jnp` arrays (`GOAL`,
-    # `CLUTTER_OBSTACLES`), which initializes JAX's GPU backend and claims
-    # ~75% of the device -- in *this* process, which then holds it for the
-    # whole sweep and starves every cell of it. The launcher only reads a
-    # parser, so pin it to CPU first.
+    # Importing pusht.py pulls in oim.utils.scenes, whose SCENES registry
+    # builds module-level `jnp` arrays (goal/obstacles per scene), which
+    # initializes JAX's GPU backend and claims ~75% of the device -- in
+    # *this* process, which then holds it for the whole sweep and starves
+    # every cell of it. The launcher only reads a parser, so pin it to CPU
+    # first.
     #
     # `jax.config`, not `JAX_PLATFORMS`: the environment variable is read
     # when `jax` is first imported, and `oim/__init__.py` has already done

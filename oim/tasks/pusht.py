@@ -6,76 +6,9 @@ import mujoco
 from mujoco import mjx
 
 from oim import ROOT
-from oim.objects import (
-    Box,
-    Circle,
-    ObstacleField,
-    PlanarPushingObject,
-    Polygon,
-    se2_distance_sq,
-    t_shape_footprint,
-)
+from oim.objects import PlanarPushingObject, se2_distance_sq
 from oim.task_base import ConsensusTask, Task
-
-# Goal pose for the cluttered variant (world-frame SE(2)), matching the
-# `goal` mocap body in models/pusht_clutter/pusht_clutter.xml.
-GOAL = jnp.array([0.50, 0.48, jnp.pi / 4])
-
-# Static obstacles, matching the obstacle geoms in the same MJCF.
-CLUTTER_OBSTACLES = ObstacleField(
-    [
-        Circle(center=[0.08, 0.32], radius=0.04),
-        Box(center=[0.38, 0.10], half_extents=[0.04, 0.035], angle=0.25),
-        Polygon(jnp.array([[0.10, 0.42], [0.20, 0.42], [0.15, 0.52]])),
-    ]
-)
-
-# xArm6 base placement (x, y, yaw about z), ground-mounted. Chosen via the
-# reach sweep in models/xarm6_pusht_clutter/verify_reach.py; covers the
-# block/goal/obstacle footprint within a few cm.
-XARM6_BASE_POS = (0.2, 0.75)
-XARM6_BASE_YAW_DEG = -90.0
-
-# "gym2": a single-obstacle scene converted from the Object-Informed-
-# Manipulation (IsaacGym) repo's `conf/task/sim_task02.yaml` ("push the tee
-# block avoiding an obstacle"), matching `models/xarm6_pusht_gym2/`. The
-# T-block's own geometry (crossbar/stem half-extents and offset, below) is
-# taken directly from that repo's `assets/urdf/tee_block/tee_block.urdf` --
-# it's noticeably bigger than `t_shape_footprint()`'s clutter-scene default.
-#
-# Goal/obstacle/arm-base positions are IsaacGym's own literal world-frame
-# numbers (confirmed identical -- arm base, block start, goal -- across
-# every sim_taskNN.yaml, and via docs/static/results/figures/sim_tasks.png:
-# block starts at (0.7, -0.45), goal at (0.9, 0.30), obstacle at (0.9, 0.05),
-# arm base at (0.4, 0)) *translated* by (-0.7, +0.45) so the block's own
-# start lands at (0, 0). That's required, not a stylistic choice:
-# `_block_pose` reads `qpos` directly for `robot="xarm6"`, which is the
-# T_x/T_y joints' displacement from the block body's MJCF-declared anchor,
-# not the true world position -- every other scene keeps that anchor at
-# (0, 0) so the two coincide, and this one must too or every cost term
-# below silently compares the wrong quantity against `self.goal`. The
-# translation is rigid (preserves every real relative distance/angle from
-# IsaacGym's own numbers, just re-origins them), not a rescale. The goal
-# orientation is IsaacGym's own quat ([0,0,1,0] xyzw), a 180-degree flip
-# about z from the block's spawn orientation (theta=0, matching
-# `t_shape_footprint()`'s own implicit zero), hence `jnp.pi` below.
-GYM2_GOAL = jnp.array([0.2, 0.75, jnp.pi])
-GYM2_OBSTACLES = ObstacleField(
-    [Box(center=[0.2, 0.5], half_extents=[0.05, 0.05], angle=0.0)]
-)
-GYM2_FOOTPRINT_KW = dict(
-    crossbar_half=(0.100, 0.025), stem_half=(0.025, 0.050),
-    crossbar_y=0.0, stem_y=-0.075,
-)
-
-# gym2's own xArm6 mount -- distinct from XARM6_BASE_POS/YAW above, since
-# gym2's block/goal/obstacle sit in a different part of the workspace.
-# IsaacGym's own (0.4, 0), translated by the same (-0.7, +0.45) as
-# everything else above (a rigid shift doesn't change yaw, so that's still
-# 0 -- IsaacGym never rotates its base either, no init_ori on
-# xarm6_stick.yaml).
-GYM2_XARM6_BASE_POS = (-0.3, 0.45)
-GYM2_XARM6_BASE_YAW_DEG = 0.0
+from oim.utils.scenes import SCENES
 
 
 class PushT(Task, ConsensusTask):
@@ -90,24 +23,23 @@ class PushT(Task, ConsensusTask):
     driven by `oim.algs.admm.ADMM`. The object-level subproblem is
     delegated to `oim.objects.PlanarPushingObject`.
 
-    `robot` selects the embodiment used for the clutter scene: `"point"`
-    (default) is the original free 2-DOF point-mass pusher
-    (`models/pusht_clutter/pusht_clutter.xml`); `"xarm6"` swaps that for a
-    real 6-DoF UFACTORY xArm6 with a rigid pushing-stick end-effector
-    (`models/xarm6_pusht_clutter/`, `models/xarm6/xarm6.xml`), ground-mounted
-    at `XARM6_BASE_POS`. Only meaningful with `clutter=True` -- there is no
-    non-cluttered xArm6 scene. The two embodiments share every method below
-    except the handful that read the "pusher position" or realize the
-    contact wrench, which branch on `self.robot`; everything about the
-    object side (goal, obstacles, limit-surface dynamics/costs) is exactly
-    the same physics regardless of which robot is pushing.
+    `robot` selects the embodiment: `"point"` (default) is the original
+    free 2-DOF point-mass pusher; `"xarm6"` swaps that for a real 6-DoF
+    UFACTORY xArm6 with a rigid pushing-stick end-effector. Only meaningful
+    with `clutter=True` -- there is no non-cluttered xArm6 scene. The two
+    embodiments share every method below except the handful that read the
+    "pusher position" or realize the contact wrench, which branch on
+    `self.robot`; everything about the object side (goal, obstacles,
+    limit-surface dynamics/costs) is exactly the same physics regardless of
+    which robot is pushing.
 
-    `env` selects which scene variant to load, `"xarm6"`-only: `"clutter"`
-    (default) is the 3-obstacle scene above; `"gym2"` is
-    `models/xarm6_pusht_gym2/`, converted from the Object-Informed-
-    Manipulation (IsaacGym) repo's `sim_task02` ("push the tee block
-    avoiding an obstacle") -- a single obstacle and a differently-sized
-    T-block, see `GYM2_GOAL`/`GYM2_OBSTACLES`/`GYM2_FOOTPRINT_KW`.
+    `env` selects which scene to load, by name, from the
+    `oim.utils.scenes.SCENES` registry -- `PushT` itself holds no
+    scene-specific data or branching; it asks the registry for one
+    `SceneSpec` (MJCF path per embodiment, goal, obstacles, footprint, and
+    the xArm6 base placement) and wraps cost functions/ADMM plumbing around
+    whatever it's handed. Adding an environment is a new `SCENES` entry
+    plus its own MJCF, never a change here.
     """
 
     def __init__(
@@ -117,29 +49,28 @@ class PushT(Task, ConsensusTask):
         planning_dt: Optional[float] = None,
         robot: Literal["point", "xarm6"] = "point",
         consensus_source: Literal["twist", "contact"] = "twist",
-        env: Literal["clutter", "gym2"] = "clutter",
+        env: str = "clutter",
     ) -> None:
         """Load the MuJoCo model and set task parameters.
 
         Args:
             impl: The backend implementation for rollouts ("jax" or "warp").
-            clutter: Whether to load the cluttered scene (with obstacles)
-                and enable the ADMM `ConsensusTask` methods.
+            clutter: Whether to load `env`'s scene (with obstacles) and
+                enable the ADMM `ConsensusTask` methods.
             planning_dt: If given, overrides the model's simulation timestep.
                 Used to run the planner at a coarser rate than execution.
-            robot: Which embodiment pushes the block in the clutter scene,
-                `"point"` (default, the original free 2-DOF pusher) or
-                `"xarm6"` (a real 6-DoF arm). Ignored (must be `"point"`)
-                when `clutter=False`.
+            robot: Which embodiment pushes the block, `"point"` (default,
+                the original free 2-DOF pusher) or `"xarm6"` (a real 6-DoF
+                arm). Ignored (must be `"point"`) when `clutter=False`.
             consensus_source: How the robot block estimates A^r. `"twist"`
                 (default) inverts the limit-surface relation, `w = D^-1
                 xdot^o`; works on both backends and both embodiments, and is
                 continuous through contact breaks. `"contact"` reads the
                 simulator's constraint force literally, matching the paper's
                 wording, but is only valid for `robot="point"`.
-            env: Which scene variant, `"clutter"` (default) or `"gym2"`.
-                `"gym2"` requires `robot="xarm6"` -- there is no point-mass
-                version of that scene.
+            env: Which scene to load, by name from
+                `oim.utils.scenes.SCENES` (only meaningful with
+                `clutter=True`). Must support `robot`, or raises.
         """
         if robot not in ("point", "xarm6"):
             raise ValueError(f"robot must be 'point' or 'xarm6', got {robot!r}")
@@ -156,10 +87,6 @@ class PushT(Task, ConsensusTask):
                 "an articulated arm's contact force appears as J^T f spread "
                 "across its joints, not at a single pair of DOFs."
             )
-        if env not in ("clutter", "gym2"):
-            raise ValueError(f"env must be 'clutter' or 'gym2', got {env!r}")
-        if env == "gym2" and robot != "xarm6":
-            raise ValueError("env='gym2' requires robot='xarm6'")
 
         self.clutter = clutter
         self.robot = robot
@@ -167,13 +94,14 @@ class PushT(Task, ConsensusTask):
         self.env = env
         if not clutter:
             scene_path = "pusht/scene.xml"
-        elif robot == "xarm6":
-            scene_path = (
-                "xarm6_pusht_gym2/scene.xml" if env == "gym2"
-                else "xarm6_pusht_clutter/scene.xml"
-            )
         else:
-            scene_path = "pusht_clutter/scene.xml"
+            if env not in SCENES:
+                raise ValueError(
+                    f"env={env!r} is not in oim.utils.scenes.SCENES "
+                    f"(available: {sorted(SCENES)})"
+                )
+            spec = SCENES[env]
+            scene_path = spec.mjcf_scene(robot)
         mj_model = mujoco.MjModel.from_xml_path(ROOT + "/models/" + scene_path)
         if planning_dt is not None:
             mj_model.opt.timestep = planning_dt
@@ -182,15 +110,11 @@ class PushT(Task, ConsensusTask):
             # Ground-mounted base placement, not baked into xarm6.xml itself
             # (that file is a reusable, placement-agnostic robot asset) --
             # same pattern as overriding opt.timestep above: mutate the
-            # loaded mj_model before it's handed to mjx. Each scene variant
-            # has its own mount, since the workspace moves between them.
-            base_pos, base_yaw_deg = (
-                (GYM2_XARM6_BASE_POS, GYM2_XARM6_BASE_YAW_DEG) if env == "gym2"
-                else (XARM6_BASE_POS, XARM6_BASE_YAW_DEG)
-            )
+            # loaded mj_model before it's handed to mjx. Each scene has its
+            # own mount, since the workspace moves between them.
             base_id = mj_model.body("xarm6_link_base").id
-            mj_model.body_pos[base_id] = [*base_pos, 0.0]
-            yaw = jnp.deg2rad(base_yaw_deg)
+            mj_model.body_pos[base_id] = [*spec.xarm6_base_pos, 0.0]
+            yaw = jnp.deg2rad(spec.xarm6_base_yaw_deg)
             mj_model.body_quat[base_id] = [
                 float(jnp.cos(yaw / 2)),
                 0.0,
@@ -243,22 +167,17 @@ class PushT(Task, ConsensusTask):
                 ]
             )
 
-            # goal/obstacles/footprint are the only things that differ
-            # between scene variants -- mu/mass/limit_surface_radius stay
-            # fixed (physics of the block/table, not its shape), chosen so
-            # the friction-cone limit mu*m*g equals the block joints'
-            # `frictionloss` in the MJCF for both scenes' geoms.
-            if env == "gym2":
-                goal, obstacles = GYM2_GOAL, GYM2_OBSTACLES
-                footprint = t_shape_footprint(**GYM2_FOOTPRINT_KW)
-            else:
-                goal, obstacles = GOAL, CLUTTER_OBSTACLES
-                footprint = t_shape_footprint()
+            # goal/obstacles/footprint come from the scene registry (see
+            # oim.utils.scenes) -- the only things that differ between
+            # scenes. mu/mass/limit_surface_radius stay fixed (physics of
+            # the block/table, not its shape), chosen so the friction-cone
+            # limit mu*m*g equals the block joints' `frictionloss` in the
+            # MJCF for every scene's geoms.
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
-                goal=goal,
-                footprint=footprint,
-                obstacles=obstacles,
+                goal=spec.goal,
+                footprint=spec.footprint(),
+                obstacles=spec.obstacles,
                 mu=0.4,
                 mass=2.0,
                 limit_surface_radius=0.06,
@@ -279,7 +198,7 @@ class PushT(Task, ConsensusTask):
             self.tip_target_z = float(mj_model.body("block").pos[2])
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
-            self.goal = goal
+            self.goal = spec.goal
 
     # ------------------------------------------------------------------
     # Plain (non-ADMM) sampling-based MPC interface
