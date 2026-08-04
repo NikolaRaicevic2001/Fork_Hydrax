@@ -43,6 +43,18 @@
   </default>
 
   <worldbody>
+    <!-- Fixed recording camera, front-on: arm reaching towards camera,
+         block/obstacle/goal laid out in a row -- matching the
+         Object-Informed-Manipulation (IsaacGym) repo's own reference
+         screenshots. Derived from a free camera at azimuth=180,
+         elevation=-25, distance=1.1, lookat=(-0.05, 0.375, 0.15) (the
+         gym2 workspace's own center, see scene.xml's <statistic>),
+         converted to explicit pos/xyaxes since MJCF <camera> has no
+         azimuth/elevation/distance/lookat form. Confirmed via a rendered
+         check, not derived blind. -->
+    <camera name="front" pos="0.9469 0.3410 0.6149"
+      xyaxes="0.0000 1.0000 -0.0000 -0.4226 0.0000 0.9063"/>
+
     <!-- Mirrors the block's geoms exactly, at the goal pose -- same
          convention as xarm6_pusht_clutter.xml. Keep in sync with
          block_crossbar/block_stem below and with

@@ -472,11 +472,17 @@ def _run_3d_once(args: argparse.Namespace, cfg: Dict[str, Any]) -> None:
         results_dir = os.path.join(ROOT, "results")
         os.makedirs(out_dir, exist_ok=True)
         if is_admm:
+            # gym2's own fixed "front" camera (see xarm6_pusht_gym2.xml) --
+            # matches the Object-Informed-Manipulation (IsaacGym) repo's
+            # own reference framing. clutter has no named camera, so this
+            # stays None (the default free camera) there.
+            camera = "front" if args.env == "gym2" else None
             log = run_3d_admm(
                 task, ctrl, ctrl.init_params(seed=args.seed), mj_model,
                 mj_data, frequency=1.0 / dt, max_steps=args.steps,
                 record_dir=out_dir if args.record else None,
-                record_name=name(), show_plans=args.show_plans, **tol,
+                record_name=name(), show_plans=args.show_plans, camera=camera,
+                **tol,
             )
         else:
             # run_3d_plain has no recording support at all -- --record is
