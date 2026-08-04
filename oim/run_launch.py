@@ -61,6 +61,17 @@ CONFIG_DIR = os.path.join(os.path.dirname(__file__), "configs")
 # oim/models/xarm6_pusht_clutter/verify_reach.py.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
 
+# gym2's own starting config -- XARM6_START_QPOS_DEG above lands joint2 at
+# 93.6% of its range (near its limit) for gym2's mount, and its tip ends up
+# ~0.47m from the block (near the obstacle instead), so the arm spends the
+# first ~130 of 200 steps just walking over before making contact. Found by
+# a grid search (like verify_reach.py, but scoring for margin from every
+# joint's own range limit, not just tip position/tilt): tip lands within
+# 0.03m of the block start with an 11-degree tilt, and the tightest joint
+# (joint3) sits at 20.6% from its limit -- more than 3x XARM6_START_QPOS_DEG's
+# worst margin (6.4%, joint2).
+GYM2_XARM6_START_QPOS_DEG = [-45.0, 15.0, -37.5, -30.0, 15.0]
+
 
 def load_config(env: str) -> Dict[str, Any]:
     """Load `oim/configs/{env}.yaml`."""
@@ -395,7 +406,10 @@ def _build_3d(
     mj_model.opt.ls_iterations = cfg["world3d"]["exec_ls_iterations"]
     mj_data = mujoco.MjData(mj_model)
     if robot == "xarm6":
-        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
+        start_qpos_deg = (
+            GYM2_XARM6_START_QPOS_DEG if env == "gym2" else XARM6_START_QPOS_DEG
+        )
+        mj_data.qpos[:5] = [math.radians(q) for q in start_qpos_deg]
         mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
     else:
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
