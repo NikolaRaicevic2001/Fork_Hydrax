@@ -1,24 +1,26 @@
-# Hyperparameters for the "xarm6_clutter" environment (xArm6 3D robot,
-# clutter scene), read by oim/run_launch.py.
+# Hyperparameters for the "gym2" environment (xArm6 3D robot, gym2 scene),
+# read by oim/run_launch.py.
 #
-# Copied from point_clutter.yaml (task 11/12): xArm6 needs its own tuning
-# (sampler/ADMM hyperparameters, execution model) independent of the point
-# robot's, since a shared file meant every xArm6 tuning change also applied
-# (untested) to the point robot. `world2d`'s fields are unused for this
-# robot but kept for schema consistency with point_clutter.yaml.
+# Copied from xarm6_clutter.yaml, differing only in world3d.env: this is the
+# same xArm6 sampler/ADMM tuning against a different 3D scene -- a single
+# obstacle and a differently-sized T-block, converted from the
+# Object-Informed-Manipulation (IsaacGym) repo's sim_task02 ("push the tee
+# block avoiding an obstacle"). See oim/tasks/pusht.py's GYM2_GOAL/
+# GYM2_OBSTACLES/GYM2_FOOTPRINT_KW and oim/models/xarm6_pusht_gym2/.
 #
-# --env selects this file (oim/configs/{env}.yaml).
+# --env selects this file (oim/configs/{env}.yaml), i.e. `--env gym2`.
 
 world3d:
-  robot: xarm6 # point | xarm6
-  env: clutter # clutter | gym2 -- which 3D scene variant (xarm6 only)
+  robot: xarm6 # point | xarm6 -- gym2 only exists for xarm6
+  env: gym2 # clutter | gym2 -- which 3D scene variant (xarm6 only)
   planning_dt: 0.05 # sub-optimizer rollout timestep
   exec_timestep: 0.002 # execution-model MuJoCo timestep
   exec_iterations: 100
   exec_ls_iterations: 50
 
 world2d:
-  env: clutter # clutter | corridor | gate -- the 2D scenario itself
+  env: clutter # clutter | corridor | gate -- unused for this robot, kept
+  # for schema consistency with xarm6_clutter.yaml/point_clutter.yaml.
   mass: 2.0
   mu: 0.4 # object/support friction
   mu_c: 0.5 # robot/object friction
@@ -60,9 +62,10 @@ admm:
   eps_r: 0.5
   eps_s: 0.5
   # Residual-driven noise annealing (paper Algorithm 4 step 8) is off: the
-  # primal residual never converges for this task, so noise just sits
-  # pinned near noise_max instead of annealing -- confirmed to make
-  # divergence worse (see cost_formulation_and_results_eval.md task 9).
+  # primal residual never converges on the clutter scene, so noise just
+  # sits pinned near noise_max instead of annealing -- confirmed to make
+  # divergence worse there (see Tasks.md). Left off here too until gym2 is
+  # itself characterized.
   noise_min: 0.0
   noise_kappa: 0.0
   noise_max: 0.0
@@ -71,11 +74,8 @@ run:
   seed: 5
   seed0: 0
   steps: 300 # xarm6 needs longer than the point robot's 200 to converge
-  # (task 11) -- some seeds only cross the goal tolerance after step 200.
-  trials: 5
-  # oim/sim3d/run.py's run_3d_admm (0.05/0.05) and run_3d_plain (0.06/0.10)
-  # otherwise default to different "reached" thresholds, which would make
-  # flat baselines look better than ADMM by construction in --eval. Both
-  # get these same values, everywhere, in oim/run_launch.py.
+  # on the clutter scene (task 11); kept as the starting default here too.
+  trials: 1 # single fixed seed for now -- many ablations/baselines queued
+  # up, per Shahid (Tasks.md); revisit once that backlog clears.
   goal_pos_tol: 0.05
   goal_theta_tol: 0.05

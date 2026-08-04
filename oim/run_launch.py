@@ -34,11 +34,11 @@ from oim.algs import (
     WrenchConsensus,
     make_object_shim,
 )
-from oim.objects import Box, Capsule, Circle, Polygon, rotate, t_shape_footprint
+from oim.objects import Box, Capsule, Circle, Polygon, rotate
 from oim.sim2d import PushT2D, Scenario, build_scenario, run_2d
 from oim.sim3d.deterministic import run_interactive
 from oim.sim3d.run import run_3d_admm, run_3d_plain
-from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
+from oim.tasks.pusht import PushT
 from oim.utils.metrics import aggregate_metrics
 from oim.utils.results import RunName, save_run_metrics, save_run_states
 from oim.utils.results_eval import save_eval_results
@@ -114,8 +114,13 @@ def _diagnostics_panel(ax_r, log: dict) -> None:  # noqa: ANN001
     ax_r.set_title("ADMM diagnostics")
 
 
-def plot_run_3d(log: dict, path: str, stride: int = 5) -> None:
-    """Draw the block's swept footprint, the pusher path, and diagnostics."""
+def plot_run_3d(task: PushT, log: dict, path: str, stride: int = 5) -> None:
+    """Draw the block's swept footprint, the pusher path, and diagnostics.
+
+    Obstacles/goal/footprint come from `task.object_model` (not a hardcoded
+    clutter-scene constant), so this plots correctly for any 3D scene
+    variant (`clutter`, `gym2`, ...).
+    """
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
@@ -124,11 +129,11 @@ def plot_run_3d(log: dict, path: str, stride: int = 5) -> None:
     fig, (ax, ax_r) = plt.subplots(
         1, 2, figsize=(13, 5.5), gridspec_kw={"width_ratios": [1.4, 1]}
     )
-    verts = np.asarray(t_shape_footprint().vertices)
-    for obs in CLUTTER_OBSTACLES.shapes:
+    verts = np.asarray(task.object_model.footprint.vertices)
+    for obs in task.object_model.obstacles.shapes:
         poly = _obstacle_outline(obs)
         ax.fill(poly[:, 0], poly[:, 1], color="0.4", zorder=1)
-    goal = _footprint_world(verts, np.asarray(GOAL))
+    goal = _footprint_world(verts, np.asarray(task.object_model.goal))
     closed = np.vstack([goal, goal[:1]])
     ax.plot(
         closed[:, 0], closed[:, 1], color="green", lw=2, label="goal", zorder=4
@@ -334,10 +339,15 @@ def _build_3d(
     horizon = args.horizon
     knots = cfg["sampler"]["robot_num_knots"]
     spline = cfg["sampler"]["robot_spline"]
+    # Which 3D scene variant -- "clutter" (default) or "gym2" (see
+    # oim/tasks/pusht.py, only meaningful for robot="xarm6"). Read from cfg,
+    # not a literal, same as everything else here: an --env gym2.yaml config
+    # sets world3d.env: gym2.
+    env = cfg["world3d"].get("env", "clutter")
 
     task = PushT(
         impl="warp" if args.warp else "jax", clutter=True, planning_dt=dt,
-        robot=robot,
+        robot=robot, env=env,
         # "contact" (point-mass only) reads the real constraint force;
         # "twist" infers wrench from motion and converges worse (task 10).
         consensus_source="contact" if robot == "point" else "twist",
@@ -479,7 +489,7 @@ def _run_3d_once(args: argparse.Namespace, cfg: Dict[str, Any]) -> None:
                 block_dof_adr=task.block_dofs,
             ),
         )
-        plot_run_3d(log, os.path.join(out_dir, f"{name()}.png"))
+        plot_run_3d(task, log, os.path.join(out_dir, f"{name()}.png"))
     else:
         run_interactive(
             ctrl, mj_model, mj_data, frequency=1.0 / dt, show_traces=False,
