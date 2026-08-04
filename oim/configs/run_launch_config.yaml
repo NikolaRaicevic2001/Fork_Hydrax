@@ -37,7 +37,7 @@ sweep:
   robot_opt: [mppi]
   object_opt: [mppi]
 
-  horizon: []
+  horizon: [16,32]
   samples: []
   n_admm: []
   seed: []

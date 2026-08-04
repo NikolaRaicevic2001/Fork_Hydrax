@@ -1,0 +1,87 @@
+# Default parameters for the xArm6 robot.
+#
+# `examples/pusht.py` loads `oim/configs/{robot}.yaml` and uses every value
+# below as an argparse default, so a bare `uv run python examples/pusht.py
+# admm` runs exactly what is written here. Passing a flag overrides that one
+# value and nothing else -- the file is the baseline, the command line is the
+# exception.
+#
+# That means two runs of the same algorithm are configured identically
+# unless you deliberately differ, and comparing two algorithms compares the
+# same sampler budget, physics and execution model rather than whatever a
+# flag happened to be set to.
+#
+# One file per robot, not per scene: `--scene` picks the 3D layout
+# (`clutter`, `gym2`) and every scene is run under the same numbers, so a
+# scene comparison is not confounded by tuning. Separate from `point.yaml`
+# precisely so tuning the arm cannot silently retune the point mass -- the
+# arm's per-rollout collision cost is far higher, so its sampler budget and
+# step count do not transfer.
+#
+# `world2d` is unused for this robot (2D has one disc robot) but kept for
+# schema parity, so the loader needs no per-robot special cases.
+
+world3d:
+  planning_dt: 0.05 # sub-optimizer rollout timestep
+  exec_timestep: 0.002 # execution-model MuJoCo timestep
+  exec_iterations: 100
+  exec_ls_iterations: 50
+
+# Used only with `--world 2d`; the scenario itself comes from `--env`.
+world2d:
+  mass: 2.0
+  mu: 0.4 # object/support friction
+  mu_c: 0.5 # robot/object friction
+  f_max: 4.0 # cap on the normal contact force
+
+sampler:
+  num_samples: 64 # higher exhausts an 11 GB GPU for the arm; 96 measured
+  # not to help reliably anyway
+  horizon: 15 # consensus horizon H, in steps of planning_dt
+  robot_num_knots: 4
+  robot_spline: linear
+  object_spline: zero # the object block always uses num_knots = horizon
+  mppi:
+    noise_level: 0.5
+    temperature: 0.5
+  cem:
+    num_elites: 8
+    sigma_start: 0.5
+    sigma_min: 0.1
+  ps:
+    noise_level: 0.5
+  cbo:
+    initial_noise_level: 0.5
+    temperature: 0.5
+    consensus_weight: 1.0
+    noise_weight: 1.0
+    step_size: 0.1
+
+admm:
+  robot_opt: mppi # mppi | cem | ps | cbo
+  object_opt: mppi
+  n_admm: 8
+  rho: 10.0
+  gamma: 0.1
+  # The residual is a Frobenius norm over (2H, 3) normalized entries, so
+  # the paper's 0.05 is unreachable at H = 15 and the early exit would
+  # never fire.
+  eps_r: 0.5
+  eps_s: 0.5
+  # Residual-driven noise annealing (paper Algorithm 4 step 8) is off: the
+  # primal residual never converges for this task, so the noise sits pinned
+  # near noise_max instead of annealing. Measured over 600 steps at one
+  # seed: final position error 4.65 with it on, 2.01 with it off.
+  noise_min: 0.0
+  noise_kappa: 0.0
+  noise_max: 0.0
+
+run:
+  seed: 5
+  steps: 300 # the arm needs longer than the point robot's 200: some seeds
+  # only cross the goal tolerance after step 200
+  # One definition of "reached", recorded into every run file so
+  # `oim/run_eval.py` can re-derive success -- and so a flat baseline and
+  # ADMM are never scored against different thresholds.
+  goal_pos_tol: 0.05
+  goal_theta_tol: 0.05

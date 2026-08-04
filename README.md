@@ -16,9 +16,9 @@ inner solver.
   <img src="img/cube.gif" width="30%" />
 </p>
 
-- [Setup](#setup) · [Running](#running) · [Method](#method) ·
+- [Setup](#setup) · [Algorithms](#algorithms) · [Running](#running) · [Method](#method) ·
   [Code layout](#code-layout) · [Extending](#extending) ·
-  [Algorithms](#algorithms) · [Citation](#citation)
+  [Citation](#citation)
 
 ## Setup
 
@@ -35,6 +35,23 @@ cd Object-Informed-Manipulation-MJX && uv sync
 | `uv run pytest` | Tests |
 | `uv run ruff check .` | Lint |
 
+## Algorithms
+
+Any of these serves as either ADMM subproblem solver, or runs standalone.
+
+| Algorithm | Description | Import |
+| --- | --- | --- |
+| **[ADMM object-informed MPPI](#method)** | **Hierarchical object/robot decomposition, coordinated to consensus on the contact wrench.** | [`oim.algs.ADMM`](oim/algs/admm.py) |
+| [Predictive sampling](https://arxiv.org/abs/2212.00541) | Take the lowest-cost rollout. | [`oim.algs.PredictiveSampling`](oim/algs/predictive_sampling.py) |
+| [MPPI](https://arxiv.org/abs/1707.02342) | Exponentially weighted average of rollouts. | [`oim.algs.MPPI`](oim/algs/mppi.py) |
+| [CEM](https://en.wikipedia.org/wiki/Cross-entropy_method) | Fit a Gaussian to the `n` elite rollouts. | [`oim.algs.CEM`](oim/algs/cem.py) |
+| [DIAL-MPC](https://arxiv.org/abs/2409.15610) | MPPI with dual-loop annealed covariance. | [`oim.algs.DIAL`](oim/algs/dial.py) |
+| [MPPI-CMA](https://arxiv.org/pdf/2506.22087) | MPPI with an adaptive sampling distribution. | [`oim.algs.MppiCma`](oim/algs/mppi_cma.py) |
+| [MTP](https://arxiv.org/abs/2505.01059) | Structured tensor sampling + local CEM update. | [`oim.algs.MTP`](oim/algs/mtp.py) |
+| [CBO](https://en.wikipedia.org/wiki/Consensus_based_optimization) | SDE pulling samples toward a consensus point. | [`oim.algs.CBO`](oim/algs/cbo.py) |
+| [Evosax](https://github.com/RobertTLange/evosax/) | 30+ evolution strategies (CMA-ES, DE, …). | [`oim.algs.Evosax`](oim/algs/evosax.py) |
+
+
 ## Running
 
 Push-T through clutter: drive an SE(2) goal past three static obstacles.
@@ -47,30 +64,25 @@ cheap one:
 | [`oim/run_launch.py`](oim/run_launch.py) | a sweep, one subprocess per cell | `results/sweeps/*.json` | the sweep config |
 | [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md}` | run files |
 
-Run files hold only what was *observed*. Success, goal error, execution time
-and frequency are derived by `run_eval`, so a new metric or a stricter
-tolerance costs a second rather than a re-run.
-
 ### Single runs
 
 ```bash
 # 3D xArm6: MPPI object block, 600 headless steps, mp4 + consensus overlay
-uv run python examples/pusht.py --robot xarm6 --record admm \
-    --object-opt mppi --headless --steps 600 --show-plans
+uv run python examples/pusht.py --robot xarm6 --record --warp admm \
+    --robot-opt mppi --object-opt mppi --headless --steps 300 --show-plans
 
 # 2D gate: contact-action object block, animated, eager for a debugger
-uv run python examples/pusht.py --world 2d --env gate --contact-action \
-    --no-jit --animate admm --n-admm 12 --rho 20 --steps 40 --seed 3
+uv run python examples/pusht.py --world 2d --env gate \
+    --animate admm --n-admm 12 --rho 20 --steps 100 --seed 3
 ```
 
-World and scene flags go **before** the algorithm name, solver and run flags
-**after** it.
 
 | Flag | Default | |
 | --- | --- | --- |
 | ***before the algorithm*** | | |
+| `--config` | `oim/configs/{robot}.yaml` | Parameter file supplying every default below |
 | `--world {3d,2d}` | `3d` | `3d`: MJX contact, point or xArm6 robot, `admm`/`mppi`/`ps`. `2d`: analytic single-point contact, disc robot, `admm` only — same ADMM code, for separating algorithm bugs from simulator bugs |
-| `--samples`, `--horizon` | 64, 15 | Rollouts per block, consensus horizon $H$ |
+| `--samples`, `--horizon` | from config | Rollouts per block, consensus horizon $H$ |
 | `--robot {point,xarm6}` | `point` | *3D:* embodiment; `xarm6` implies clutter |
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
 | `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, since Warp allocates outside that pool and otherwise cannot build its CUDA graphs |
@@ -80,16 +92,16 @@ World and scene flags go **before** the algorithm name, solver and run flags
 | `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
 | ***after the algorithm*** | | |
 | `--robot-opt`, `--object-opt` | `mppi` | Inner solver per block: `mppi`/`cem`/`ps`/`cbo` |
-| `--n-admm` | 8 | Max ADMM iterations per control step |
-| `--rho`, `--gamma` | 10.0, 0.1 | Penalty $\rho$, proximal weight $\gamma$ |
-| `--steps`, `--seed` | 200, 5 | Control steps, RNG seed |
+| `--n-admm` | from config | Max ADMM iterations per control step |
+| `--rho`, `--gamma` | from config | Penalty $\rho$, proximal weight $\gamma$ |
+| `--steps`, `--seed` | from config | Control steps (200 point / 300 xarm6), RNG seed |
 | `--headless` | off | No viewer; run `--steps` and save a run file |
 | `--show-plans` | off | *3D:* overlay both blocks' predicted object paths — **amber** what the object block intends ($x^{o*}$), **teal** what the robot block would produce; their gap is the primal residual, made spatial. Costs 1.7% of a control step |
-| *not exposed* | | Shared by both worlds: $\epsilon_r = \epsilon_s = 0.5$, noise annealing off, wrench bounds $\pm D^{-1}$, success tolerance 5 cm / 0.05 rad |
+| *config only* | | No flag, but tunable in the YAML: $\epsilon_r$, $\epsilon_s$, noise annealing, per-method sampler parameters, execution timestep, goal tolerances, 2D physics |
 
 | `--env` | Stresses | Clearance |
 | --- | --- | --- |
-| `clutter` | routing *around* obstacles; mirrors the MJX scene exactly. Always leaves a way round, so a planner can pass it while unable to commit to a passage | 41 mm |
+| `clutter` | routing *around* obstacles | 41 mm |
 | `corridor` | pushing *through* a narrow horizontal channel | 15 mm |
 | `gate` | a vertical slot, then rotating to the goal | 5 mm |
 
@@ -371,7 +383,8 @@ oim/
 │   └── asynchronous.py   controller and simulator in separate processes
 │
 ├── run_launch.py         sweep driver;  run_eval.py  post-hoc metrics
-├── configs/              run_launch_config.yaml (the sweep definition)
+├── configs/              point.yaml, xarm6.yaml (defaults per robot);
+│                         run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
 └── utils/                spline, video, results.py (run files), metrics.py
 ```
@@ -425,22 +438,6 @@ task = PushT2D(footprint=t_shape_footprint(), goal=[0.5, 0.48, 0.785], obstacles
 ctrl, params = build_admm_2d(task, n_admm=6)
 log = run_2d(task, ctrl, params, robot_pos0=(0.0, -0.13), max_steps=200)
 ```
-
-## Algorithms
-
-Any of these serves as either ADMM subproblem solver, or runs standalone.
-
-| Algorithm | Description | Import |
-| --- | --- | --- |
-| **[ADMM object-informed MPPI](#method)** | **Hierarchical object/robot decomposition, coordinated to consensus on the contact wrench.** | [`oim.algs.ADMM`](oim/algs/admm.py) |
-| [Predictive sampling](https://arxiv.org/abs/2212.00541) | Take the lowest-cost rollout. | [`oim.algs.PredictiveSampling`](oim/algs/predictive_sampling.py) |
-| [MPPI](https://arxiv.org/abs/1707.02342) | Exponentially weighted average of rollouts. | [`oim.algs.MPPI`](oim/algs/mppi.py) |
-| [CEM](https://en.wikipedia.org/wiki/Cross-entropy_method) | Fit a Gaussian to the `n` elite rollouts. | [`oim.algs.CEM`](oim/algs/cem.py) |
-| [DIAL-MPC](https://arxiv.org/abs/2409.15610) | MPPI with dual-loop annealed covariance. | [`oim.algs.DIAL`](oim/algs/dial.py) |
-| [MPPI-CMA](https://arxiv.org/pdf/2506.22087) | MPPI with an adaptive sampling distribution. | [`oim.algs.MppiCma`](oim/algs/mppi_cma.py) |
-| [MTP](https://arxiv.org/abs/2505.01059) | Structured tensor sampling + local CEM update. | [`oim.algs.MTP`](oim/algs/mtp.py) |
-| [CBO](https://en.wikipedia.org/wiki/Consensus_based_optimization) | SDE pulling samples toward a consensus point. | [`oim.algs.CBO`](oim/algs/cbo.py) |
-| [Evosax](https://github.com/RobertTLange/evosax/) | 30+ evolution strategies (CMA-ES, DE, …). | [`oim.algs.Evosax`](oim/algs/evosax.py) |
 
 ## Citation
 

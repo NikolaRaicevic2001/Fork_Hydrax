@@ -27,6 +27,7 @@ from typing import Optional
 import jax
 import mujoco
 import numpy as np
+import yaml
 
 from oim import ROOT
 from oim.algs import (
@@ -100,6 +101,28 @@ def _xarm6_start_qpos(mj_model: mujoco.MjModel) -> np.ndarray:
     return qpos
 
 
+CONFIG_DIR = os.path.join(ROOT, "configs")
+
+
+def load_config(robot: str, path: Optional[str] = None) -> dict:
+    """Load the default parameters for a robot.
+
+    Args:
+        robot: `"point"` or `"xarm6"`, selecting `oim/configs/{robot}.yaml`.
+        path: An explicit config file, overriding the robot lookup.
+
+    Returns:
+        The parsed config.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+    """
+    if path is None:
+        path = os.path.join(CONFIG_DIR, f"{robot}.yaml")
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
 def _named_camera(
     mj_model: mujoco.MjModel, name: str = "front"
 ) -> Optional[str]:
@@ -115,14 +138,6 @@ def _named_camera(
         return name
     return None
 
-# One definition of "reached", passed explicitly to every runner and
-# recorded into every run file. The runners' own defaults disagree (2D
-# 0.06/0.10, 3D 0.05/0.05), which would quietly bias any comparison across
-# worlds; `oim/run_eval.py` re-derives success from these, so they must
-# travel with the data rather than live in a default argument.
-GOAL_POS_TOL = 0.05
-GOAL_THETA_TOL = 0.05
-
 
 def build_sub_optimizer(
     name: str,
@@ -132,53 +147,51 @@ def build_sub_optimizer(
     num_knots: int,
     spline: str,
     seed: int,
-    num_samples: int = 64,
+    num_samples: int,
+    sampler_cfg: dict,
 ) -> object:
-    """Build one ADMM sub-optimizer by name.
+    """Build one sub-optimizer by name, from the config's block for it.
 
     Any `SamplingBasedController` works for either ADMM block -- the ADMM
     layer only ever calls `sample_knots`/`update_params` -- so the object-
-    and robot-level optimizers are chosen independently here.
+    and robot-level optimizers are chosen independently here. Each one's
+    own parameters come from `sampler_cfg[name]`, so retuning a method is
+    a config edit rather than a code edit, and the same numbers are used
+    whether it runs as an ADMM block or as a flat baseline.
+
+    Args:
+        name: `mppi`, `cem`, `ps` or `cbo`.
+        task: The task to build against.
+        plan_horizon: Planning horizon in seconds.
+        num_knots: Spline knots.
+        spline: Spline type.
+        seed: RNG seed.
+        num_samples: Rollouts per iteration.
+        sampler_cfg: The config's `sampler` block.
+
+    Returns:
+        The controller.
+
+    Raises:
+        ValueError: If `name` is not a known sub-optimizer.
     """
     common = dict(
         plan_horizon=plan_horizon,
         spline_type=spline,
         num_knots=num_knots,
         seed=seed,
+        num_samples=num_samples,
     )
+    if name not in SUB_OPTIMIZERS:
+        raise ValueError(f"unknown sub-optimizer '{name}'")
+    own = sampler_cfg[name]
     if name == "mppi":
-        return MPPI(
-            task,
-            num_samples=num_samples,
-            noise_level=0.5,
-            temperature=0.5,
-            **common,
-        )
+        return MPPI(task, **own, **common)
     if name == "cem":
-        return CEM(
-            task,
-            num_samples=num_samples,
-            num_elites=8,
-            sigma_start=0.5,
-            sigma_min=0.1,
-            **common,
-        )
+        return CEM(task, **own, **common)
     if name == "ps":
-        return PredictiveSampling(
-            task, num_samples=num_samples, noise_level=0.5, **common
-        )
-    if name == "cbo":
-        return CBO(
-            task,
-            num_samples=num_samples,
-            initial_noise_level=0.5,
-            temperature=0.5,
-            consensus_weight=1.0,
-            noise_weight=1.0,
-            step_size=0.1,
-            **common,
-        )
-    raise ValueError(f"unknown sub-optimizer '{name}'")
+        return PredictiveSampling(task, **own, **common)
+    return CBO(task, **own, **common)
 
 
 def _obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
@@ -392,7 +405,8 @@ def save_animation_2d(
 
 def _build_admm_3d(args: argparse.Namespace) -> tuple:
     """Task, ADMM controller, and execution model/data for the 3D world."""
-    plan_dt = 0.05
+    w3, smp, adm = args.cfg["world3d"], args.cfg["sampler"], args.cfg["admm"]
+    plan_dt = w3["planning_dt"]
     horizon = args.horizon
 
     # "contact" (point-mass only) reads the real constraint force;
@@ -416,19 +430,21 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
         args.robot_opt,
         task,
         plan_horizon=horizon * plan_dt,
-        num_knots=4,
-        spline="linear",
+        num_knots=smp["robot_num_knots"],
+        spline=smp["robot_spline"],
         seed=args.seed,
         num_samples=args.samples,
+        sampler_cfg=smp,
     )
     object_optimizer = build_sub_optimizer(
         args.object_opt,
         make_object_shim(task, dt=plan_dt),
         plan_horizon=horizon * plan_dt,
         num_knots=horizon,
-        spline="zero",
+        spline=smp["object_spline"],
         seed=args.seed,
         num_samples=args.samples,
+        sampler_cfg=smp,
     )
     ctrl = ADMM(
         task,
@@ -436,21 +452,19 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
         object_optimizer,
         consensus,
         n_admm=args.n_admm,
-        eps_r=0.5,
-        eps_s=0.5,
+        eps_r=adm["eps_r"],
+        eps_s=adm["eps_s"],
         proximal_weight=args.gamma,
         rho_init=args.rho,
-        # Noise annealing off: the primal residual never converges here,
-        # so it just pins near noise_max instead of annealing anything.
-        noise_min=0.0,
-        noise_kappa=0.0,
-        noise_max=0.0,
+        noise_min=adm["noise_min"],
+        noise_kappa=adm["noise_kappa"],
+        noise_max=adm["noise_max"],
     )
 
     mj_model = deepcopy(task.mj_model)
-    mj_model.opt.timestep = 0.002
-    mj_model.opt.iterations = 100
-    mj_model.opt.ls_iterations = 50
+    mj_model.opt.timestep = w3["exec_timestep"]
+    mj_model.opt.iterations = w3["exec_iterations"]
+    mj_model.opt.ls_iterations = w3["exec_ls_iterations"]
     mj_data = mujoco.MjData(mj_model)
     if args.robot == "xarm6":
         mj_data.qpos[:] = _xarm6_start_qpos(mj_model)
@@ -483,8 +497,8 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
             mj_data,
             frequency=1.0 / 0.05,
             max_steps=args.steps,
-            goal_pos_tol=GOAL_POS_TOL,
-            goal_theta_tol=GOAL_THETA_TOL,
+            goal_pos_tol=args.cfg["run"]["goal_pos_tol"],
+            goal_theta_tol=args.cfg["run"]["goal_theta_tol"],
             record_dir=out_dir if args.record else None,
             record_name=name(),
             camera=camera,
@@ -503,6 +517,7 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
                 seed=args.seed,
             ),
             hyperparameters=dict(
+                config=args.config_name,
                 steps=args.steps,
                 samples=args.samples,
                 horizon=args.horizon,
@@ -510,8 +525,8 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
                 rho=args.rho,
                 gamma=args.gamma,
                 control_dt=0.05,
-                goal_pos_tol=GOAL_POS_TOL,
-                goal_theta_tol=GOAL_THETA_TOL,
+                goal_pos_tol=args.cfg["run"]["goal_pos_tol"],
+                goal_theta_tol=args.cfg["run"]["goal_theta_tol"],
             ),
             task=task,
             log=log,
@@ -633,8 +648,13 @@ def _run_3d_flat_headless(args: argparse.Namespace) -> None:
         mj_data,
         frequency=1.0 / dt,
         max_steps=args.steps,
-        goal_pos_tol=GOAL_POS_TOL,
-        goal_theta_tol=GOAL_THETA_TOL,
+        goal_pos_tol=args.cfg["run"]["goal_pos_tol"],
+        goal_theta_tol=args.cfg["run"]["goal_theta_tol"],
+        # Same recording the ADMM path gets: a baseline you cannot watch
+        # is a baseline you cannot debug.
+        record_dir=out_dir if args.record else None,
+        record_name=name(),
+        camera=_named_camera(mj_model),
     )
     save_run(
         os.path.join(ROOT, "results", "runs"),
@@ -649,6 +669,7 @@ def _run_3d_flat_headless(args: argparse.Namespace) -> None:
             seed=args.seed,
         ),
         hyperparameters=dict(
+            config=args.config_name,
             steps=args.steps,
             samples=args.samples,
             horizon=args.horizon,
@@ -656,8 +677,8 @@ def _run_3d_flat_headless(args: argparse.Namespace) -> None:
             rho=None,
             gamma=None,
             control_dt=dt,
-            goal_pos_tol=GOAL_POS_TOL,
-            goal_theta_tol=GOAL_THETA_TOL,
+            goal_pos_tol=args.cfg["run"]["goal_pos_tol"],
+            goal_theta_tol=args.cfg["run"]["goal_theta_tol"],
         ),
         task=task,
         log=log,
@@ -680,20 +701,28 @@ def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
     Same cluttered task and execution model ADMM uses, so a comparison
     isolates the object-level hierarchy.
     """
-    task = PushT(clutter=True, planning_dt=dt, robot=args.robot, env=args.scene)
+    w3, smp = args.cfg["world3d"], args.cfg["sampler"]
+    task = PushT(
+        impl="warp" if args.warp else "jax",
+        clutter=True,
+        planning_dt=dt,
+        robot=args.robot,
+        env=args.scene,
+    )
     ctrl = build_sub_optimizer(
         method,
         task,
         plan_horizon=args.horizon * dt,
-        num_knots=4,
-        spline="linear",
+        num_knots=smp["robot_num_knots"],
+        spline=smp["robot_spline"],
         seed=args.seed,
         num_samples=args.samples,
+        sampler_cfg=smp,
     )
     mj_model = deepcopy(task.mj_model)
-    mj_model.opt.timestep = 0.002
-    mj_model.opt.iterations = 100
-    mj_model.opt.ls_iterations = 50
+    mj_model.opt.timestep = w3["exec_timestep"]
+    mj_model.opt.iterations = w3["exec_iterations"]
+    mj_model.opt.ls_iterations = w3["exec_ls_iterations"]
     mj_data = mujoco.MjData(mj_model)
     if args.robot == "xarm6":
         mj_data.qpos[:] = _xarm6_start_qpos(mj_model)
@@ -703,6 +732,7 @@ def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
 
 
 def _build_2d_task_and_scenario(args: argparse.Namespace) -> tuple:
+    w2 = args.cfg["world2d"]
     scenario = build_scenario(args.env)
     task = PushT2D(
         footprint=scenario.footprint,
@@ -710,6 +740,10 @@ def _build_2d_task_and_scenario(args: argparse.Namespace) -> tuple:
         obstacles=None if args.no_obstacles else scenario.obstacles,
         contact_actions=args.contact_action,
         relocate_contact=not args.no_relocate,
+        mass=w2["mass"],
+        mu=w2["mu"],
+        mu_c=w2["mu_c"],
+        f_max=w2["f_max"],
     )
     return task, scenario
 
@@ -774,6 +808,7 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
             seed=args.seed,
         ),
         hyperparameters=dict(
+            config=args.config_name,
             steps=args.steps,
             samples=args.samples,
             horizon=args.horizon,
@@ -781,8 +816,8 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
             rho=args.rho,
             gamma=args.gamma,
             control_dt=float(task.dt),
-            goal_pos_tol=GOAL_POS_TOL,
-            goal_theta_tol=GOAL_THETA_TOL,
+            goal_pos_tol=args.cfg["run"]["goal_pos_tol"],
+            goal_theta_tol=args.cfg["run"]["goal_theta_tol"],
             contact_action=args.contact_action,
             relocate_contact=not args.no_relocate,
         ),
@@ -806,9 +841,28 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
             )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(cfg: Optional[dict] = None) -> argparse.ArgumentParser:
+    """Build the CLI, taking every default from `cfg`.
+
+    Args:
+        cfg: A config from `load_config`. Omitted (the launcher's
+            introspection path) falls back to the point robot's file, since
+            only the *shape* of the parser matters there.
+
+    Returns:
+        The parser.
+    """
+    if cfg is None:
+        cfg = load_config("point")
+    smp, adm, run = cfg["sampler"], cfg["admm"], cfg["run"]
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--world", choices=["2d", "3d"], default="3d")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Explicit parameter file; default oim/configs/{robot}.yaml.",
+    )
     parser.add_argument(
         "--warp", action="store_true", help="3D only: MjWarp instead of JAX."
     )
@@ -865,10 +919,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-plot", action="store_true", help="2D only: skip the plot."
     )
     parser.add_argument(
-        "--samples", type=int, default=64, help="Rollouts per sub-optimizer."
+        "--samples",
+        type=int,
+        default=smp["num_samples"],
+        help="Rollouts per sub-optimizer.",
     )
     parser.add_argument(
-        "--horizon", type=int, default=15, help="Consensus horizon H."
+        "--horizon",
+        type=int,
+        default=smp["horizon"],
+        help="Consensus horizon H.",
     )
 
     subparsers = parser.add_subparsers(dest="algorithm")
@@ -878,16 +938,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for algo_name, algo_help in flat_algorithms:
         sp = subparsers.add_parser(algo_name, help=algo_help)
-        sp.add_argument("--seed", type=int, default=5)
+        sp.add_argument("--seed", type=int, default=run["seed"])
         sp.add_argument(
             "--headless",
             action="store_true",
             help="No viewer: run --steps steps and save a run file.",
         )
-        sp.add_argument("--n-admm", type=int, default=8)
-        sp.add_argument("--rho", type=float, default=10.0)
-        sp.add_argument("--gamma", type=float, default=0.1)
-        sp.add_argument("--steps", type=int, default=200)
+        sp.add_argument("--n-admm", type=int, default=adm["n_admm"])
+        sp.add_argument("--rho", type=float, default=adm["rho"])
+        sp.add_argument("--gamma", type=float, default=adm["gamma"])
+        sp.add_argument("--steps", type=int, default=run["steps"])
 
     admm_parser = subparsers.add_parser(
         "admm", help="ADMM-coordinated object-informed MPPI (2D or 3D)"
@@ -895,25 +955,25 @@ def _build_parser() -> argparse.ArgumentParser:
     admm_parser.add_argument(
         "--robot-opt",
         choices=SUB_OPTIMIZERS,
-        default="mppi",
+        default=adm["robot_opt"],
         help="Sampling optimizer for the robot-level ADMM block.",
     )
     admm_parser.add_argument(
         "--object-opt",
         choices=SUB_OPTIMIZERS,
-        default="mppi",
+        default=adm["object_opt"],
         help="Sampling optimizer for the object-level ADMM block.",
     )
-    admm_parser.add_argument("--n-admm", type=int, default=8)
-    admm_parser.add_argument("--rho", type=float, default=10.0)
-    admm_parser.add_argument("--gamma", type=float, default=0.1)
-    admm_parser.add_argument("--seed", type=int, default=5)
+    admm_parser.add_argument("--n-admm", type=int, default=adm["n_admm"])
+    admm_parser.add_argument("--rho", type=float, default=adm["rho"])
+    admm_parser.add_argument("--gamma", type=float, default=adm["gamma"])
+    admm_parser.add_argument("--seed", type=int, default=run["seed"])
     admm_parser.add_argument(
         "--headless",
         action="store_true",
         help="3D only: no viewer, run --steps steps, save plot + results JSON.",
     )
-    admm_parser.add_argument("--steps", type=int, default=200)
+    admm_parser.add_argument("--steps", type=int, default=run["steps"])
     admm_parser.add_argument(
         "--show-plans",
         action="store_true",
@@ -924,8 +984,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """Parse CLI arguments and dispatch to the selected world/mode."""
-    parser = _build_parser()
+    # Two stages, because which config supplies the defaults is itself a
+    # CLI choice: peek at --robot/--config, load that file, then build the
+    # real parser on top of it. Anything passed explicitly still wins --
+    # argparse defaults are exactly "the value when the flag is absent".
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--robot", default="point")
+    pre.add_argument("--config", default=None)
+    pre_args, _ = pre.parse_known_args()
+
+    cfg = load_config(pre_args.robot, pre_args.config)
+    parser = _build_parser(cfg)
     args = parser.parse_args()
+    args.cfg = cfg
+    # Provenance: which defaults produced this run, recorded alongside the
+    # values themselves so a run file explains itself.
+    args.config_name = pre_args.config or pre_args.robot
 
     if args.world == "2d" and args.algorithm != "admm":
         parser.error(

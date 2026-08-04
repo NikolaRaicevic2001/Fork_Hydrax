@@ -476,6 +476,11 @@ def run_3d_plain(
     goal_pos_tol: float = 0.05,
     goal_theta_tol: float = 0.05,
     verbose: bool = True,
+    record_dir: Optional[str] = None,
+    record_name: Optional[str] = None,
+    video_fps: float = 30.0,
+    video_size: Tuple[int, int] = (720, 480),
+    camera: Optional[Union[str, int]] = None,
 ) -> Dict[str, Any]:
     """Run a plain (non-ADMM) controller headlessly and return a log.
 
@@ -499,10 +504,65 @@ def run_3d_plain(
         goal_pos_tol: Positional tolerance for declaring success.
         goal_theta_tol: Angular tolerance for declaring success.
         verbose: Whether to print progress.
+        record_dir: Directory for an mp4. None disables recording.
+        record_name: Filename stem for the mp4, no extension. Required
+            when `record_dir` is given.
+        video_fps: Target playback frame rate.
+        video_size: (width, height) of the video in pixels.
+        camera: Model camera name or id to render from. None uses the
+            default free camera.
 
     Returns:
         A log dict with the same trajectory keys as `run_3d_admm`.
+
+    Raises:
+        ValueError: If `record_dir` is given without `record_name`.
     """
+    recorder = None
+    if record_dir is not None:
+        if record_name is None:
+            raise ValueError("record_dir requires record_name")
+        recorder = _OffscreenRecorder(
+            mj_model,
+            output_dir=record_dir,
+            base_name=record_name,
+            target_fps=video_fps,
+            size=video_size,
+            camera=camera,
+        )
+    try:
+        return _run_plain(
+            task,
+            ctrl,
+            params,
+            mj_model,
+            mj_data,
+            frequency,
+            max_steps,
+            goal_pos_tol,
+            goal_theta_tol,
+            verbose,
+            recorder,
+        )
+    finally:
+        if recorder is not None:
+            recorder.close()
+
+
+def _run_plain(
+    task: PushT,
+    ctrl: SamplingBasedController,
+    params: Any,
+    mj_model: mujoco.MjModel,
+    mj_data: mujoco.MjData,
+    frequency: float,
+    max_steps: int,
+    goal_pos_tol: float,
+    goal_theta_tol: float,
+    verbose: bool,
+    recorder: Optional[_OffscreenRecorder],
+) -> Dict[str, Any]:
+    """The flat closed loop itself; see `run_3d_plain` for the arguments."""
     replan_period = 1.0 / frequency
     sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
     jit_optimize = jax.jit(ctrl.optimize)
@@ -544,6 +604,8 @@ def run_3d_plain(
         for i in range(sim_steps_per_replan):
             mj_data.ctrl[:] = us[i]
             mujoco.mj_step(mj_model, mj_data)
+            if recorder is not None:
+                recorder.capture(mj_data)
 
         block_pose = _log_step(log, task, mj_data, params, us, admm=False)
         pos_err = float(np.linalg.norm(block_pose[:2] - goal[:2]))
