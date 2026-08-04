@@ -130,12 +130,17 @@ def build_controller(args):
     return task, ctrl
 
 
-def build_mock_interface(task, control_rate):
+def build_mock_interface(task, control_rate, exact_twist=False):
     """A MuJoCo sim behind the hardware interface, for laptop testing.
 
     Each `send_velocity` applies the commanded velocity and advances the sim by
     one control tick (1/control_rate). `run_real` calls it `num_ticks` times per
     replanning period, so the sim advances exactly one period per plan.
+
+    exact_twist=True reads the sim's true block qvel (like the sim driver
+    run_3d_admm); False (default) finite-differences the pose, as real hardware
+    must from FoundationPose. With consensus_source="twist" this choice matters:
+    the pose-derived twist is the sim-to-real gap.
     """
     mj_model = deepcopy(task.mj_model)
     mj_model.opt.timestep = EXEC_TIMESTEP
@@ -147,7 +152,8 @@ def build_mock_interface(task, control_rate):
     mj_data.qpos[:5] = [math.radians(q) for q in task.arm_start_deg]
     mj_data.qpos[5:8] = list(task.start)
     sim_steps_per_send = max(1, round((1.0 / control_rate) / EXEC_TIMESTEP))
-    return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send)
+    return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send,
+                               emulate_pose_only=not exact_twist)
 
 
 def build_real_interface(task, velocity_topic, enable_commands):
@@ -197,6 +203,10 @@ def main():
                         "over a socket instead of importing rclpy here")
     p.add_argument("--bridge-host", default="127.0.0.1")
     p.add_argument("--bridge-port", type=int, default=5599)
+    p.add_argument("--exact-twist", action="store_true",
+                   help="mock only: feed the sim's true block qvel to the "
+                        "planner (like run_3d_admm) instead of a pose finite "
+                        "difference. Isolates the FoundationPose twist gap")
     p.add_argument("--num-samples", type=int, default=16,
                    help="rollouts per ADMM sub-optimizer (16 for xarm6; 64 can "
                         "exhaust an 11 GB GPU)")
@@ -213,7 +223,8 @@ def main():
 
     t = time.perf_counter()
     if args.mock:
-        interface = build_mock_interface(task, args.control_rate)
+        interface = build_mock_interface(task, args.control_rate,
+                                         exact_twist=args.exact_twist)
         real_time = False
     elif args.socket:
         # Two-process fallback: the ROS I/O (and --dry-run / --velocity-topic)
@@ -245,7 +256,9 @@ def main():
     # Same naming/schema as the sim run, so the two logs compare directly.
     results_dir = os.path.join(ROOT, "results")
     os.makedirs(results_dir, exist_ok=True)
-    variant = "xarm6_mock" if args.mock else "xarm6_real"
+    # Scene goes in the name so clutter vs clutter2 runs never get confused by
+    # timestamp alone (e.g. pusht3d_xarm6_mock_clutter2_admm_...).
+    variant = f"xarm6_{'mock' if args.mock else 'real'}_{args.scene}"
     name = RunName("pusht3d", variant, "admm")
     save_run_metrics(
         results_dir, name,
