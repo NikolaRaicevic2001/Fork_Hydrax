@@ -1,0 +1,69 @@
+{
+  "runs_dir": "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/oim/results/runs",
+  "n_runs": 2,
+  "filters": {
+    "algorithm": [
+      "admm",
+      "mppi"
+    ]
+  },
+  "group_by": [
+    "task"
+  ],
+  "averaged_over": {
+    "gamma": [
+      "0.1",
+      "None"
+    ],
+    "rho": [
+      "10.0",
+      "None"
+    ],
+    "n_admm": [
+      "8",
+      "None"
+    ],
+    "steps": [
+      "100",
+      "300"
+    ]
+  },
+  "goal_pos_tol": null,
+  "goal_theta_tol": null,
+  "results": {
+    "pusht3d_xarm6_clutter": {
+      "admm(mppi/mppi)": {
+        "n_trials": 1,
+        "success_rate": 0.0,
+        "pos_err_mean": 0.4635532326821745,
+        "pos_err_std": 0.0,
+        "pos_err_mean_success": null,
+        "pos_err_std_success": null,
+        "theta_err_mean": 0.5279517058007038,
+        "theta_err_std": 0.0,
+        "theta_err_mean_success": null,
+        "theta_err_std_success": null,
+        "mean_execution_time": 15.0,
+        "std_execution_time": 0.0,
+        "mean_frequency_hz": 5.552562259112756,
+        "std_frequency_hz": 0.0
+      },
+      "mppi": {
+        "n_trials": 1,
+        "success_rate": 0.0,
+        "pos_err_mean": 0.4896478709921333,
+        "pos_err_std": 0.0,
+        "pos_err_mean_success": null,
+        "pos_err_std_success": null,
+        "theta_err_mean": 0.5850245363932394,
+        "theta_err_std": 0.0,
+        "theta_err_mean_success": null,
+        "theta_err_std_success": null,
+        "mean_execution_time": 15.0,
+        "std_execution_time": 0.0,
+        "mean_frequency_hz": 38.34393147366591,
+        "std_frequency_hz": 0.0
+      }
+    }
+  }
+}

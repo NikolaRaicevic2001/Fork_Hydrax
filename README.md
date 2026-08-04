@@ -37,8 +37,6 @@ cd Object-Informed-Manipulation-MJX && uv sync
 
 ## Algorithms
 
-Any of these serves as either ADMM subproblem solver, or runs standalone.
-
 | Algorithm | Description | Import |
 | --- | --- | --- |
 | **[ADMM object-informed MPPI](#method)** | **Hierarchical object/robot decomposition, coordinated to consensus on the contact wrench.** | [`oim.algs.ADMM`](oim/algs/admm.py) |
@@ -116,9 +114,9 @@ same goal, differing only in what is in the way.
 | --- | --- | --- |
 | `clutter` | T, 45° turn | disc, box, triangle (this repo's own layout) |
 | `open_table` | T, 180° flip | nothing — the unobstructed baseline |
-| `single_obstacle` | ” | one 0.1 m cube on the direct path |
-| `shelf_gap` | ” | two 0.2×0.25×0.2 m shelves; the gap is exactly as wide as the T is long |
-| `ycb_clutter` | ” | that cube plus spam can, sugar box, mustard bottle |
+| `single_obstacle` | T, 180° flip | one 0.1 m cube on the direct path |
+| `shelf_gap` | T, 180° flip | two 0.2×0.25×0.2 m shelves; the gap is exactly as wide as the T is long |
+| `ycb_clutter` | T, 180° flip | that cube plus spam can, sugar box, mustard bottle |
 | `icra_sign` | C, 90° turn | seven glyphs spelling *ICRA 2026*; the goal is the empty C slot |
 
 MJX collides meshes as convex hulls, so mesh obstacles are replaced by

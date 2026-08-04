@@ -1,0 +1,35 @@
+{
+  "runs_dir": "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/oim/results/runs",
+  "n_runs": 1,
+  "filters": {
+    "algorithm": [
+      "admm"
+    ]
+  },
+  "group_by": [
+    "task"
+  ],
+  "averaged_over": {},
+  "goal_pos_tol": null,
+  "goal_theta_tol": null,
+  "results": {
+    "pusht3d_xarm6_clutter": {
+      "admm(mppi/mppi)": {
+        "n_trials": 1,
+        "success_rate": 0.0,
+        "pos_err_mean": 0.4635532326821745,
+        "pos_err_std": 0.0,
+        "pos_err_mean_success": null,
+        "pos_err_std_success": null,
+        "theta_err_mean": 0.5279517058007038,
+        "theta_err_std": 0.0,
+        "theta_err_mean_success": null,
+        "theta_err_std_success": null,
+        "mean_execution_time": 15.0,
+        "std_execution_time": 0.0,
+        "mean_frequency_hz": 5.552562259112756,
+        "std_frequency_hz": 0.0
+      }
+    }
+  }
+}
