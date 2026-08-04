@@ -1,14 +1,19 @@
 """Config-driven launcher for push-T runs.
 
 Same coverage as `examples/pusht.py`, but every hyperparameter comes from
-`--env`'s YAML config (`oim/configs/{env}.yaml`), not a CLI default -- CLI
-flags still override it for one-off changes. Own code, not a caller of
-`examples/pusht.py`; `--world 2d` only ever runs `admm`.
+`--robot`'s YAML config (`oim/configs/{robot}.yaml`), not a CLI
+default -- CLI flags still override it for one-off changes. One config per
+robot (not per environment): `--env` picks which 3D scene variant to run
+(`clutter`, `gym2`, ...) against the *same* hyperparameters, so comparing
+two environments means comparing the same sampler budget and tuning, not
+whatever a separate per-environment config happened to set. Own code, not a
+caller of `examples/pusht.py`; `--world 2d` only ever runs `admm`.
 
     uv run python -m oim.run_launch admm
     uv run python -m oim.run_launch --world 3d --robot xarm6 mppi --headless
     uv run python -m oim.run_launch admm --eval --trials 5
     uv run python -m oim.run_launch --world 2d admm
+    uv run python -m oim.run_launch --robot xarm6 --env gym2 admm --headless
 """
 
 import argparse
@@ -340,10 +345,11 @@ def _build_3d(
     knots = cfg["sampler"]["robot_num_knots"]
     spline = cfg["sampler"]["robot_spline"]
     # Which 3D scene variant -- "clutter" (default) or "gym2" (see
-    # oim/tasks/pusht.py, only meaningful for robot="xarm6"). Read from cfg,
-    # not a literal, same as everything else here: an --env gym2.yaml config
-    # sets world3d.env: gym2.
-    env = cfg["world3d"].get("env", "clutter")
+    # oim/tasks/pusht.py, only meaningful for robot="xarm6"). From args, not
+    # cfg directly, so `--env gym2` on the command line actually takes
+    # effect -- the hyperparameters (sampler/admm/run) stay exactly the same
+    # regardless of which scene is selected; only the task/scene changes.
+    env = args.env
 
     task = PushT(
         impl="warp" if args.warp else "jax", clutter=True, planning_dt=dt,
@@ -661,7 +667,7 @@ def _flat_3d_runner(
     return run
 
 
-def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
+def _build_parser(cfg: Dict[str, Any]) -> argparse.ArgumentParser:
     """Build the parser, defaults sourced from `cfg`.
 
     CLI flags exist to override it for one-off changes, not to supply the
@@ -672,14 +678,17 @@ def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
     )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--world", choices=["2d", "3d"], default="3d")
-    parser.add_argument(
-        "--env", default=env,
-        help="Selects oim/configs/{env}.yaml for every default below.",
-    )
     parser.add_argument("--warp", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument(
         "--robot", choices=["point", "xarm6"], default=w3["robot"],
+        help="Also selects which oim/configs/{robot}.yaml loads.",
+    )
+    parser.add_argument(
+        "--env", choices=["clutter", "gym2"], default="clutter",
+        help="3D xarm6 only: which scene variant, same hyperparameters "
+        "either way -- see oim/tasks/pusht.py's `env` parameter. Not read "
+        "from cfg: a scene choice, not a hyperparameter.",
     )
     parser.add_argument("--samples", type=int, default=sampler["num_samples"])
     parser.add_argument("--horizon", type=int, default=sampler["horizon"])
@@ -733,13 +742,19 @@ def _build_parser(cfg: Dict[str, Any], env: str) -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """Parse `--env`, load its config, then parse the full CLI."""
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--env", default="point_clutter")
-    pre_args, _ = pre.parse_known_args()
-    cfg = load_config(pre_args.env)
+    """Parse `--robot`, load its config, then parse the full CLI.
 
-    parser = _build_parser(cfg, pre_args.env)
+    One config per robot, not per environment/scene -- `--env` (a normal
+    flag in `_build_parser`, not pre-parsed here) picks the scene, but reads
+    its hyperparameters from whichever robot's config already loaded, so
+    every scene for a given robot is compared under identical tuning.
+    """
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--robot", choices=["point", "xarm6"], default="point")
+    pre_args, _ = pre.parse_known_args()
+    cfg = load_config(pre_args.robot)
+
+    parser = _build_parser(cfg)
     args = parser.parse_args()
 
     if args.world == "2d" and args.algorithm != "admm":
@@ -747,6 +762,8 @@ def main() -> None:
             "2D has no plain running_cost/terminal_cost -- 'admm' is the "
             "only algorithm valid with --world 2d."
         )
+    if args.env == "gym2" and args.robot != "xarm6":
+        parser.error("--env gym2 requires --robot xarm6.")
     if args.world == "2d" and args.algorithm == "admm":
         if args.robot_opt != cfg["admm"]["robot_opt"] or (
             args.object_opt != cfg["admm"]["object_opt"]

@@ -54,8 +54,8 @@ way:
 
 | | [`examples/pusht.py`](examples/pusht.py) | [`oim/run_launch.py`](oim/run_launch.py) |
 | --- | --- | --- |
-| Hyperparameters from | CLI defaults | `oim/configs/{env}.yaml` |
-| `--env` selects | the 2D scenario | the config file (`point_clutter`, `xarm6_clutter`) |
+| Hyperparameters from | CLI defaults | `oim/configs/{robot}.yaml` |
+| `--env` selects | the 2D scenario | *3D:* the scene variant (`clutter`, `gym2`); same hyperparameters either way |
 
 ### Single runs
 
@@ -95,7 +95,7 @@ name, solver and run flags *after* it.
 | `--robot {point,xarm6}` | `point` | *3D:* embodiment; `xarm6` implies clutter |
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); combines with `--headless`, which renders offscreen |
 | `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts |
-| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (in `run_launch`, the config file instead) |
+| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario; *3D `run_launch` only:* `{clutter,gym2}` scene variant (`xarm6` only) |
 | `--contact-action` | off | *2D:* object block decides $[p, f_n, f_t]$, not the wrench ([below](#object-action-parameterization)) |
 | `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
 | ***after the algorithm*** | | |
@@ -138,7 +138,7 @@ flag off nothing runs.
 ```bash
 # 5 seeds; in 3D this also runs the flat baselines at the same sampler budget
 uv run python examples/pusht.py admm --eval --trials 5 --steps 200
-uv run python -m oim.run_launch --env xarm6_clutter admm --eval --trials 5
+uv run python -m oim.run_launch --robot xarm6 admm --eval --trials 5
 ```
 
 Runs `--trials` seeds instead of one recorded run and aggregates success
@@ -372,7 +372,7 @@ oim/
 │   ├── plan_overlay.py   both blocks' predicted paths, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
-├── configs/              point_clutter.yaml, xarm6_clutter.yaml
+├── configs/              point.yaml, xarm6.yaml -- one per robot, all scenes
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
 └── utils/                spline, video, results JSON, metrics
 ```

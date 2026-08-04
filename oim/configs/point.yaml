@@ -1,17 +1,19 @@
-# Hyperparameters for the "point_clutter" environment (point-mass 3D robot,
-# clutter scene), read by oim/run_launch.py.
+# Hyperparameters for the point-mass 3D robot, read by oim/run_launch.py.
 #
-# Every algorithm/baseline run_launch.py builds for this env pulls its
+# Every algorithm/baseline run_launch.py builds for this robot pulls its
 # parameters from here -- a single-run and an --eval run of the same
 # algorithm always get the same numbers, and comparing two algorithms means
 # comparing the same sampler budget, not whatever a CLI flag happened to be
 # set to that day.
 #
-# --env selects this file (oim/configs/{env}.yaml). Renamed from
+# --robot point selects this file (oim/configs/{robot}.yaml). Renamed from
 # "clutter.yaml" (task 11/12) once xArm6 tuning needed its own file
-# (oim/configs/xarm6_clutter.yaml) rather than sharing one with the point
-# robot -- the 2D scenario/physics fields below are unaffected by either
-# robot's 3D tuning and stay shared.
+# (oim/configs/xarm6.yaml) rather than sharing one with the point robot --
+# the 2D scenario/physics fields below are unaffected by either robot's 3D
+# tuning and stay shared. Nothing below is scene-specific: --env (a CLI
+# flag, see oim/tasks/pusht.py's `env` parameter) picks the 3D scene, not
+# this file -- there is only one scene for the point robot today (`gym2` is
+# xarm6-only), so --env has nothing to pick from here yet.
 
 world3d:
   robot: point # point | xarm6
@@ -65,7 +67,7 @@ admm:
   # Residual-driven noise annealing (paper Algorithm 4 step 8) is off: the
   # primal residual never converges for this task, so noise just sits
   # pinned near noise_max instead of annealing -- confirmed to make
-  # divergence worse (see cost_formulation_and_results_eval.md task 9).
+  # divergence worse (see Tasks.md's history, task 9 in the old numbering).
   noise_min: 0.0
   noise_kappa: 0.0
   noise_max: 0.0
