@@ -258,6 +258,7 @@ def _init_log(
     mj_data: mujoco.MjData,
     mjx_data: mjx.Data,
     show_plans: bool,
+    admm: bool = True,
 ) -> Dict[str, Any]:
     """Seed the log with the initial state and empty per-step series.
 
@@ -273,15 +274,22 @@ def _init_log(
         "qpos": [np.array(mj_data.qpos)],
         "qvel": [np.array(mj_data.qvel)],
         "robot_control": [],
-        "wrench": [],
-        "wrench_consensus": [],
-        "primal_residual": [],
-        "dual_residual": [],
-        "rho": [],
+        "compute_time": [],
+        # Derived, kept in memory for the console and the diagnostics plot
+        # but filtered out by `save_run` -- a run file records only what
+        # cannot be recomputed from it.
         "pos_err": [],
         "theta_err": [],
-        "compute_time": [],
     }
+    if admm:
+        # Meaningless for a flat controller: no consensus, no residuals.
+        log.update(
+            wrench=[],
+            wrench_consensus=[],
+            primal_residual=[],
+            dual_residual=[],
+            rho=[],
+        )
     if show_plans:
         # Only allocated when asked for: (H, 3) per block per step is a
         # different order of magnitude from the rest of the log.
@@ -394,6 +402,7 @@ def _log_step(
     mj_data: mujoco.MjData,
     params: Any,
     us: np.ndarray,
+    admm: bool = True,
 ) -> np.ndarray:
     """Append one control step's state and diagnostics; return the pose."""
     block_pose = np.array(task._block_pose(mj_data))
@@ -404,16 +413,21 @@ def _log_step(
     log["qpos"].append(np.array(mj_data.qpos))
     log["qvel"].append(np.array(mj_data.qvel))
     log["robot_control"].append(np.array(us[-1]))
-    log["wrench"].append(np.array(task.realized_consensus(mj_data)))
-    log["wrench_consensus"].append(np.array(params.z[0]))
-    log["primal_residual"].append(float(params.primal_residual))
-    log["dual_residual"].append(float(params.dual_residual))
-    log["rho"].append(float(params.rho))
+    if admm:
+        log["wrench"].append(np.array(task.realized_consensus(mj_data)))
+        log["wrench_consensus"].append(np.array(params.z[0]))
+        log["primal_residual"].append(float(params.primal_residual))
+        log["dual_residual"].append(float(params.dual_residual))
+        log["rho"].append(float(params.rho))
     return block_pose
 
 
 def _finalize_log(
-    log: Dict[str, Any], task: PushT, reached: bool, show_plans: bool
+    log: Dict[str, Any],
+    task: PushT,
+    reached: bool,
+    show_plans: bool,
+    admm: bool = True,
 ) -> Dict[str, Any]:
     """Stack the per-step lists into arrays and derive robot velocity."""
     log["reached"] = reached
@@ -425,13 +439,14 @@ def _finalize_log(
         "qpos",
         "qvel",
         "robot_control",
-        "wrench_consensus",
+        *(("wrench_consensus",) if admm else ()),
         *(("object_plan", "robot_plan") if show_plans else ()),
     ):
         log[key] = np.array(log[key])
-    log["wrench"] = (
-        np.array(log["wrench"]) if log["wrench"] else np.zeros((0, 3))
-    )
+    if admm:
+        log["wrench"] = (
+            np.array(log["wrench"]) if log["wrench"] else np.zeros((0, 3))
+        )
     # Realized world-frame velocity of the contact point, by difference --
     # the arm's tip has no qvel entry of its own, and this is the quantity
     # the 2D world reports, so the two logs stay comparable.
@@ -458,16 +473,20 @@ def run_3d_plain(
     mj_data: mujoco.MjData,
     frequency: float,
     max_steps: int = 200,
-    goal_pos_tol: float = 0.06,
-    goal_theta_tol: float = 0.10,
+    goal_pos_tol: float = 0.05,
+    goal_theta_tol: float = 0.05,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """Run a plain (non-ADMM) controller headlessly and return a log.
 
     The flat-baseline counterpart of `run_3d_admm`, generic over any
     `SamplingBasedController` since plain params carry no residual/rho
-    fields. Pass the same `task` (e.g. `PushT(clutter=True, ...)`) the
-    ADMM side runs, for a fair comparison on the identical scene.
+    fields. Pass the same `task` the ADMM side runs, for a fair comparison
+    on the identical scene.
+
+    Logs the same recorded state `run_3d_admm` does, minus the consensus
+    quantities a flat controller has none of, so both can be written by
+    `oim.utils.results.save_run` and compared by `oim.utils.metrics`.
 
     Args:
         task: The `PushT` task.
@@ -482,8 +501,7 @@ def run_3d_plain(
         verbose: Whether to print progress.
 
     Returns:
-        A dict with `pos_err`, `theta_err`, `compute_time`, and `reached` --
-        the subset `oim.utils.metrics.trial_metrics` needs.
+        A log dict with the same trajectory keys as `run_3d_admm`.
     """
     replan_period = 1.0 / frequency
     sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
@@ -499,7 +517,7 @@ def run_3d_plain(
     )
     mjx_data = mjx.forward(task.model, mjx_data)
 
-    log: Dict[str, Any] = {"pos_err": [], "theta_err": [], "compute_time": []}
+    log = _init_log(task, mj_data, mjx_data, show_plans=False, admm=False)
     reached = False
     goal = np.asarray(task.goal)
 
@@ -520,14 +538,14 @@ def run_3d_plain(
             jnp.arange(sim_steps_per_replan) * mj_model.opt.timestep
             + mj_data.time
         )
-        us = np.asarray(
-            jit_interp_func(tq, params.tk, params.mean[None, ...])
-        )[0]
+        us = np.asarray(jit_interp_func(tq, params.tk, params.mean[None, ...]))[
+            0
+        ]
         for i in range(sim_steps_per_replan):
             mj_data.ctrl[:] = us[i]
             mujoco.mj_step(mj_model, mj_data)
 
-        block_pose = np.array(task._block_pose(mj_data))
+        block_pose = _log_step(log, task, mj_data, params, us, admm=False)
         pos_err = float(np.linalg.norm(block_pose[:2] - goal[:2]))
         theta_err = float(abs(float(wrap_angle(block_pose[2] - goal[2]))))
         log["pos_err"].append(pos_err)
@@ -543,5 +561,4 @@ def run_3d_plain(
                 print(f"goal reached at step {step}")
             break
 
-    log["reached"] = reached
-    return log
+    return _finalize_log(log, task, reached, show_plans=False, admm=False)

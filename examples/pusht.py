@@ -1,4 +1,4 @@
-"""Run push-T: 2D (analytic) or 3D (MuJoCo MJX), one recorded run or --eval.
+"""Run push-T once: 2D (analytic) or 3D (MuJoCo MJX).
 
     # 3D, ADMM, interactive viewer
     uv run python examples/pusht.py admm
@@ -9,8 +9,9 @@
     # 2D, ADMM, the harder scenarios
     uv run python examples/pusht.py --world 2d --env corridor admm
 
-    # 5 trials of ADMM (+ flat MPPI/PS baselines on 3D), aggregate stats
-    uv run python examples/pusht.py admm --eval --trials 5 --steps 200
+One run per invocation. Sweeps are `oim/run_launch.py`'s job, and metrics
+over the resulting run files are `oim/run_eval.py`'s -- neither is done
+here, so a new metric never costs a re-run.
 
 2D has no plain `running_cost`/`terminal_cost` (`PushT2D` implements only
 `ConsensusTask`), so `mppi`/`ps` are 3D only; `--world 2d` requires `admm`.
@@ -19,16 +20,15 @@
 import argparse
 import math
 import os
+import sys
 from contextlib import nullcontext
 from copy import deepcopy
-from typing import Any, Dict, List
 
 import jax
 import mujoco
 import numpy as np
 
 from oim import ROOT
-from oim.alg_base import SamplingBasedController
 from oim.algs import (
     ADMM,
     CBO,
@@ -51,9 +51,7 @@ from oim.sim2d import (
 from oim.sim3d.deterministic import run_interactive
 from oim.sim3d.run import run_3d_admm, run_3d_plain
 from oim.tasks.pusht import CLUTTER_OBSTACLES, GOAL, PushT
-from oim.utils.metrics import aggregate_metrics
-from oim.utils.results import RunName, save_run_metrics, save_run_states
-from oim.utils.results_eval import save_eval_results
+from oim.utils.results import RunName, save_run
 
 # XLA's GPU command buffers leak across long closed loops and hit
 # RESOURCE_EXHAUSTED; disabling them is XLA's fix. Not in oim/__init__.py:
@@ -62,11 +60,31 @@ os.environ["XLA_FLAGS"] = (
     os.environ.get("XLA_FLAGS", "") + " --xla_gpu_enable_command_buffer="
 )
 
+# Warp allocates outside JAX's pool, and JAX preallocates ~75% of the device
+# the first time it touches it. On a 16 GB card that leaves Warp ~4 GB --
+# not enough to build MuJoCo Warp's CUDA graphs for the xArm6 scene, which
+# fails in `wp_cuda_graph_create_exec` before a single planning step. The
+# two only coexist if JAX grows on demand instead.
+#
+# Read from argv rather than from parsed arguments: XLA fixes its allocator
+# when the GPU backend first initializes, which happens long before main().
+# `setdefault` so an explicit setting in the environment still wins.
+if "--warp" in sys.argv:
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
 # Joint config (degrees) putting the xArm6's stick tip near the block's
 # start; found via oim/models/xarm6_pusht_clutter/verify_reach.py.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
+
+# One definition of "reached", passed explicitly to every runner and
+# recorded into every run file. The runners' own defaults disagree (2D
+# 0.06/0.10, 3D 0.05/0.05), which would quietly bias any comparison across
+# worlds; `oim/run_eval.py` re-derives success from these, so they must
+# travel with the data rather than live in a default argument.
+GOAL_POS_TOL = 0.05
+GOAL_THETA_TOL = 0.05
 
 
 def build_sub_optimizer(
@@ -413,35 +431,47 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
             "pusht3d", args.robot, "admm", args.robot_opt, args.object_opt
         )
         out_dir = os.path.join(ROOT, "recordings")
-        results_dir = os.path.join(ROOT, "results")
+        results_dir = os.path.join(ROOT, "results", "runs")
         os.makedirs(out_dir, exist_ok=True)
         log = run_3d_admm(
-            task, ctrl, ctrl.init_params(seed=args.seed), mj_model, mj_data,
-            frequency=1.0 / 0.05, max_steps=args.steps,
+            task,
+            ctrl,
+            ctrl.init_params(seed=args.seed),
+            mj_model,
+            mj_data,
+            frequency=1.0 / 0.05,
+            max_steps=args.steps,
+            goal_pos_tol=GOAL_POS_TOL,
+            goal_theta_tol=GOAL_THETA_TOL,
             record_dir=out_dir if args.record else None,
             record_name=name(),
             show_plans=args.show_plans,
         )
-        save_run_metrics(
+        save_run(
             results_dir,
             name,
-            hyperparameters=dict(
+            run=dict(
+                world="3d",
+                task=f"pusht3d_{args.robot}",
                 robot=args.robot,
-                steps=args.steps,
-                n_admm=args.n_admm,
+                algorithm="admm",
                 robot_opt=args.robot_opt,
                 object_opt=args.object_opt,
-                rho=args.rho,
-                gamma=args.gamma,
                 seed=args.seed,
             ),
+            hyperparameters=dict(
+                steps=args.steps,
+                samples=args.samples,
+                horizon=args.horizon,
+                n_admm=args.n_admm,
+                rho=args.rho,
+                gamma=args.gamma,
+                control_dt=0.05,
+                goal_pos_tol=GOAL_POS_TOL,
+                goal_theta_tol=GOAL_THETA_TOL,
+            ),
+            task=task,
             log=log,
-        )
-        save_run_states(
-            results_dir,
-            name,
-            task,
-            log,
             extra_static=dict(
                 robot=args.robot,
                 sim_timestep=float(mj_model.opt.timestep),
@@ -468,7 +498,10 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
 
 
 def _run_3d_flat_once(args: argparse.Namespace) -> None:
-    """One interactive run of a flat (non-ADMM) baseline."""
+    """One run of a flat (non-ADMM) baseline: viewer, or --headless."""
+    if args.headless:
+        _run_3d_flat_headless(args)
+        return
     # Coarsens the xarm6 planner's timestep only; execution still steps at
     # 0.001s. xarm6 always needs clutter=True (no non-cluttered scene).
     planning_dt = 0.05 if args.robot == "xarm6" else None
@@ -486,16 +519,25 @@ def _run_3d_flat_once(args: argparse.Namespace) -> None:
     if args.algorithm == "ps":
         print("Running predictive sampling")
         ctrl = PredictiveSampling(
-            task, num_samples=num_samples, noise_level=0.4,
-            num_randomizations=num_randomizations, plan_horizon=0.5,
-            spline_type="zero", num_knots=6,
+            task,
+            num_samples=num_samples,
+            noise_level=0.4,
+            num_randomizations=num_randomizations,
+            plan_horizon=0.5,
+            spline_type="zero",
+            num_knots=6,
         )
     else:
         print("Running MPPI")
         ctrl = MPPI(
-            task, num_samples=num_samples, noise_level=0.4, temperature=0.0005,
-            num_randomizations=num_randomizations, plan_horizon=0.5,
-            spline_type="zero", num_knots=6,
+            task,
+            num_samples=num_samples,
+            noise_level=0.4,
+            temperature=0.0005,
+            num_randomizations=num_randomizations,
+            plan_horizon=0.5,
+            spline_type="zero",
+            num_knots=6,
         )
 
     mj_model = deepcopy(task.mj_model)
@@ -510,22 +552,95 @@ def _run_3d_flat_once(args: argparse.Namespace) -> None:
         mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
 
     run_interactive(
-        ctrl, mj_model, mj_data, frequency=50, show_traces=False,
+        ctrl,
+        mj_model,
+        mj_data,
+        frequency=50,
+        show_traces=False,
         record_video=args.record,
         recording_prefix=f"pusht3d_{args.robot}_{args.algorithm}",
     )
 
 
-def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
-    """Flat baseline for `--eval`.
+def _run_3d_flat_headless(args: argparse.Namespace) -> None:
+    """One recorded flat-baseline run, on the scene ADMM runs.
 
-    Same cluttered task and execution model ADMM uses, so the comparison
+    Deliberately built by `_build_flat_3d`, not by the interactive path
+    above: a baseline is only worth recording if it faces the same task,
+    horizon, sampler budget and execution model ADMM does, and only this
+    builder guarantees that.
+    """
+    dt = 0.05
+    print(f"Running flat {args.algorithm} (cluttered scene, headless)")
+    task, ctrl, mj_model, mj_data = _build_flat_3d(args.algorithm, args, dt)
+    name = RunName("pusht3d", args.robot, args.algorithm)
+    out_dir = os.path.join(ROOT, "recordings")
+    os.makedirs(out_dir, exist_ok=True)
+
+    log = run_3d_plain(
+        task,
+        ctrl,
+        ctrl.init_params(seed=args.seed),
+        mj_model,
+        mj_data,
+        frequency=1.0 / dt,
+        max_steps=args.steps,
+        goal_pos_tol=GOAL_POS_TOL,
+        goal_theta_tol=GOAL_THETA_TOL,
+    )
+    save_run(
+        os.path.join(ROOT, "results", "runs"),
+        name,
+        run=dict(
+            world="3d",
+            task=f"pusht3d_{args.robot}",
+            robot=args.robot,
+            algorithm=args.algorithm,
+            robot_opt=args.algorithm,
+            object_opt=None,
+            seed=args.seed,
+        ),
+        hyperparameters=dict(
+            steps=args.steps,
+            samples=args.samples,
+            horizon=args.horizon,
+            n_admm=None,
+            rho=None,
+            gamma=None,
+            control_dt=dt,
+            goal_pos_tol=GOAL_POS_TOL,
+            goal_theta_tol=GOAL_THETA_TOL,
+        ),
+        task=task,
+        log=log,
+        extra_static=dict(
+            robot=args.robot,
+            sim_timestep=float(mj_model.opt.timestep),
+            qpos_size=int(mj_model.nq),
+            qvel_size=int(mj_model.nv),
+            block_qpos_adr=(
+                task.block_qpos_adr if args.robot == "xarm6" else [0, 1, 2]
+            ),
+            block_dof_adr=task.block_dofs,
+        ),
+    )
+
+
+def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
+    """Flat baseline on ADMM's own scene, horizon and sampler budget.
+
+    Same cluttered task and execution model ADMM uses, so a comparison
     isolates the object-level hierarchy.
     """
     task = PushT(clutter=True, planning_dt=dt, robot=args.robot)
     ctrl = build_sub_optimizer(
-        method, task, plan_horizon=args.horizon * dt, num_knots=4,
-        spline="linear", seed=args.seed, num_samples=args.samples,
+        method,
+        task,
+        plan_horizon=args.horizon * dt,
+        num_knots=4,
+        spline="linear",
+        seed=args.seed,
+        num_samples=args.samples,
     )
     mj_model = deepcopy(task.mj_model)
     mj_model.opt.timestep = 0.002
@@ -538,25 +653,6 @@ def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
     else:
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
     return task, ctrl, mj_model, mj_data
-
-
-def _flat_3d_runner(
-    task: PushT,
-    ctrl: SamplingBasedController,
-    mj_model: mujoco.MjModel,
-    mj_data: mujoco.MjData,
-    dt: float,
-    steps: int,
-):
-    """Bind a flat baseline's rollout inputs into a `seed -> log` closure."""
-
-    def run(seed: int):
-        return run_3d_plain(
-            task, ctrl, ctrl.init_params(seed=seed), mj_model, mj_data,
-            frequency=1.0 / dt, max_steps=steps, verbose=False,
-        )
-
-    return run
 
 
 def _build_2d_task_and_scenario(args: argparse.Namespace) -> tuple:
@@ -576,8 +672,13 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
     task, scenario = _build_2d_task_and_scenario(args)
     print(f"scenario: {scenario.name} -- {scenario.description}")
     ctrl, params = build_admm_2d(
-        task, horizon=args.horizon, num_samples=args.samples,
-        n_admm=args.n_admm, rho=args.rho, gamma=args.gamma, seed=args.seed,
+        task,
+        horizon=args.horizon,
+        num_samples=args.samples,
+        n_admm=args.n_admm,
+        rho=args.rho,
+        gamma=args.gamma,
+        seed=args.seed,
     )
     block_kind = (
         "contact action [p, f_n, f_t]"
@@ -592,8 +693,12 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
     ctx = jax.disable_jit() if args.no_jit else nullcontext()
     with ctx:
         log = run_2d(
-            task, ctrl, params, object_pose0=scenario.object_pose0,
-            robot_pos0=scenario.robot_pos0, max_steps=args.steps,
+            task,
+            ctrl,
+            params,
+            object_pose0=scenario.object_pose0,
+            robot_pos0=scenario.robot_pos0,
+            max_steps=args.steps,
             jit=not args.no_jit,
         )
 
@@ -608,22 +713,37 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
     # --robot-opt/--object-opt, always MPPI with 2D-tuned noise levels),
     # so the name carries no sub-optimizer suffix -- there is only one.
     name = RunName("pusht2d", scenario.name, "admm")
-    results_dir = os.path.join(ROOT, "results")
-    save_run_metrics(
-        results_dir, name,
+    results_dir = os.path.join(ROOT, "results", "runs")
+    save_run(
+        results_dir,
+        name,
+        run=dict(
+            world="2d",
+            task=f"pusht2d_{scenario.name}",
+            robot="disc",
+            algorithm="admm",
+            robot_opt="mppi",
+            object_opt="mppi",
+            seed=args.seed,
+        ),
         hyperparameters=dict(
-            env=scenario.name, steps=args.steps, n_admm=args.n_admm,
-            samples=args.samples, horizon=args.horizon, rho=args.rho,
-            gamma=args.gamma, seed=args.seed,
+            steps=args.steps,
+            samples=args.samples,
+            horizon=args.horizon,
+            n_admm=args.n_admm,
+            rho=args.rho,
+            gamma=args.gamma,
+            control_dt=float(task.dt),
+            goal_pos_tol=GOAL_POS_TOL,
+            goal_theta_tol=GOAL_THETA_TOL,
             contact_action=args.contact_action,
             relocate_contact=not args.no_relocate,
         ),
+        task=task,
         log=log,
-    )
-    save_run_states(
-        results_dir, name, task, log,
         extra_static=dict(
-            scenario=scenario.name, robot="disc",
+            scenario=scenario.name,
+            robot="disc",
             robot_radius=float(task.model.robot_radius),
             robot_max_speed=float(task.u_max[0]),
         ),
@@ -639,81 +759,6 @@ def _run_2d_admm_once(args: argparse.Namespace) -> None:
             )
 
 
-def _run_eval(args: argparse.Namespace) -> None:
-    """Run `--trials` seeds per method and save aggregate stats.
-
-    For `admm` on 3D, also runs flat MPPI/PS with the same sampler budget
-    for comparison -- ADMM's only advantage over them is then the object-
-    level reference and consensus, not a bigger search. `admm` on 2D and
-    the flat subcommands alone report just their own stats (2D has no flat
-    baseline to compare against; `PushT2D` implements no plain
-    `running_cost`/`terminal_cost`).
-    """
-    dt = 0.05
-    runners: Dict[str, Any] = {}
-
-    if args.world == "3d":
-        if args.algorithm == "admm":
-            task, ctrl, mj_model, mj_data = _build_admm_3d(args)
-            label = f"admm_{args.robot_opt}_{args.object_opt}"
-            runners[label] = lambda seed: run_3d_admm(
-                task, ctrl, ctrl.init_params(seed=seed), mj_model, mj_data,
-                frequency=1.0 / dt, max_steps=args.steps, verbose=False,
-            )
-            flat_methods = ("mppi", "ps")
-        else:
-            flat_methods = (args.algorithm,)
-        for method in flat_methods:
-            flat_task, flat_ctrl, flat_model, flat_data = _build_flat_3d(
-                method, args, dt
-            )
-            runners[method] = _flat_3d_runner(
-                flat_task, flat_ctrl, flat_model, flat_data, dt, args.steps
-            )
-        base_name = RunName("pusht3d", args.robot, "eval")
-    else:
-        task, scenario = _build_2d_task_and_scenario(args)
-        # No named sub-optimizer choice for 2D yet (see _run_2d_admm_once);
-        # "admm" alone is unambiguous since only one combo exists.
-        ctrl, _ = build_admm_2d(
-            task, horizon=args.horizon, num_samples=args.samples,
-            n_admm=args.n_admm, rho=args.rho, gamma=args.gamma,
-        )
-        runners["admm"] = lambda seed: run_2d(
-            task, ctrl, ctrl.init_params(seed=seed),
-            object_pose0=scenario.object_pose0, robot_pos0=scenario.robot_pos0,
-            max_steps=args.steps, verbose=False,
-        )
-        base_name = RunName("pusht2d", scenario.name, "eval")
-
-    summary: Dict[str, Any] = {}
-    for label, run in runners.items():
-        print(f"--- {label} ---")
-        logs: List[dict] = []
-        for i in range(args.trials):
-            seed = args.seed0 + i
-            log = run(seed)
-            print(
-                f"  trial {i} (seed={seed}): reached={log['reached']} "
-                f"final pos_err={log['pos_err'][-1]:.4f}"
-            )
-            logs.append(log)
-        metrics = aggregate_metrics(logs, dt=dt)
-        summary[label] = metrics
-        print(f"  {metrics}")
-
-    save_eval_results(
-        os.path.join(ROOT, "results", "results_eval"),
-        base_name,
-        hyperparameters=dict(
-            world=args.world, trials=args.trials, steps=args.steps,
-            seed0=args.seed0, samples=args.samples, horizon=args.horizon,
-            n_admm=args.n_admm, rho=args.rho, gamma=args.gamma,
-        ),
-        results=summary,
-    )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--world", choices=["2d", "3d"], default="3d")
@@ -721,31 +766,40 @@ def _build_parser() -> argparse.ArgumentParser:
         "--warp", action="store_true", help="3D only: MjWarp instead of JAX."
     )
     parser.add_argument(
-        "--record", action="store_true",
+        "--record",
+        action="store_true",
         help="3D only: write an mp4 to oim/recordings/ (needs ffmpeg).",
     )
     parser.add_argument(
-        "--robot", choices=["point", "xarm6"], default="point",
+        "--robot",
+        choices=["point", "xarm6"],
+        default="point",
         help="3D only. xarm6 always implies the cluttered scene.",
     )
     parser.add_argument(
-        "--env", choices=list_scenarios(), default=DEFAULT_SCENARIO,
+        "--env",
+        choices=list_scenarios(),
+        default=DEFAULT_SCENARIO,
         help=f"2D only: scenario (default: {DEFAULT_SCENARIO}).",
     )
     parser.add_argument(
-        "--contact-action", action="store_true",
+        "--contact-action",
+        action="store_true",
         help="2D only: object block decides [p, f_n, f_t], not the wrench.",
     )
     parser.add_argument(
-        "--no-relocate", action="store_true",
+        "--no-relocate",
+        action="store_true",
         help="2D only: disable the global contact-point search.",
     )
     parser.add_argument(
-        "--no-obstacles", action="store_true",
+        "--no-obstacles",
+        action="store_true",
         help="2D only: strip the obstacles.",
     )
     parser.add_argument(
-        "--no-jit", action="store_true",
+        "--no-jit",
+        action="store_true",
         help="2D only: run eagerly, steppable in a debugger.",
     )
     parser.add_argument(
@@ -768,10 +822,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     for algo_name, algo_help in flat_algorithms:
         sp = subparsers.add_parser(algo_name, help=algo_help)
-        sp.add_argument("--eval", action="store_true")
-        sp.add_argument("--trials", type=int, default=5)
-        sp.add_argument("--seed0", type=int, default=0)
         sp.add_argument("--seed", type=int, default=5)
+        sp.add_argument(
+            "--headless",
+            action="store_true",
+            help="No viewer: run --steps steps and save a run file.",
+        )
         sp.add_argument("--n-admm", type=int, default=8)
         sp.add_argument("--rho", type=float, default=10.0)
         sp.add_argument("--gamma", type=float, default=0.1)
@@ -781,11 +837,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "admm", help="ADMM-coordinated object-informed MPPI (2D or 3D)"
     )
     admm_parser.add_argument(
-        "--robot-opt", choices=SUB_OPTIMIZERS, default="mppi",
+        "--robot-opt",
+        choices=SUB_OPTIMIZERS,
+        default="mppi",
         help="Sampling optimizer for the robot-level ADMM block.",
     )
     admm_parser.add_argument(
-        "--object-opt", choices=SUB_OPTIMIZERS, default="mppi",
+        "--object-opt",
+        choices=SUB_OPTIMIZERS,
+        default="mppi",
         help="Sampling optimizer for the object-level ADMM block.",
     )
     admm_parser.add_argument("--n-admm", type=int, default=8)
@@ -793,21 +853,16 @@ def _build_parser() -> argparse.ArgumentParser:
     admm_parser.add_argument("--gamma", type=float, default=0.1)
     admm_parser.add_argument("--seed", type=int, default=5)
     admm_parser.add_argument(
-        "--headless", action="store_true",
+        "--headless",
+        action="store_true",
         help="3D only: no viewer, run --steps steps, save plot + results JSON.",
     )
     admm_parser.add_argument("--steps", type=int, default=200)
     admm_parser.add_argument(
-        "--show-plans", action="store_true",
+        "--show-plans",
+        action="store_true",
         help="3D only: overlay both ADMM blocks' predicted trajectories.",
     )
-    admm_parser.add_argument(
-        "--eval", action="store_true",
-        help="Run --trials seeds and save aggregate stats (3D: + flat MPPI/PS)"
-        " instead of one recorded run.",
-    )
-    admm_parser.add_argument("--trials", type=int, default=5)
-    admm_parser.add_argument("--seed0", type=int, default=0)
     return parser
 
 
@@ -835,9 +890,7 @@ def main() -> None:
     if args.algorithm is None:
         args.algorithm = "ps"
 
-    if getattr(args, "eval", False):
-        _run_eval(args)
-    elif args.world == "2d":
+    if args.world == "2d":
         _run_2d_admm_once(args)
     elif args.algorithm == "admm":
         _run_3d_admm_once(args)

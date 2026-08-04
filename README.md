@@ -37,65 +37,44 @@ cd Object-Informed-Manipulation-MJX && uv sync
 
 ## Running
 
-Push-T through clutter is the main demo: reach an SE(2) goal past three
-static obstacles — a greedy pusher gets stuck behind one. It runs in **two
-worlds sharing one algorithm**; only the robot block's rollout differs.
+Push-T through clutter: drive an SE(2) goal past three static obstacles.
+**Three programs, one per job**, so an expensive step never repeats for a
+cheap one:
 
-| | 3D — `--world 3d` (default) | 2D — `--world 2d` |
-| --- | --- | --- |
-| Physics | MuJoCo MJX contact | closed-form single-point contact |
-| Robot | 2-DOF point pusher, or 6-DoF xArm6 | velocity-controlled disc |
-| Algorithms | `admm`, plus flat `mppi`/`ps` baselines | `admm` only |
-| Output | viewer, or `--headless` plot | plot, gif with `--animate` |
-| Use for | final behaviour, real embodiments | isolating algorithm bugs |
+| Program | Runs | Writes | Reads |
+| --- | --- | --- | --- |
+| [`examples/pusht.py`](examples/pusht.py) | one experiment | `results/runs/*.json` | — |
+| [`oim/run_launch.py`](oim/run_launch.py) | a sweep, one subprocess per cell | `results/sweeps/*.json` | the sweep config |
+| [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md}` | run files |
 
-Two entry points take the **same flags**, so any command below runs either
-way:
-
-| | [`examples/pusht.py`](examples/pusht.py) | [`oim/run_launch.py`](oim/run_launch.py) |
-| --- | --- | --- |
-| Hyperparameters from | CLI defaults | `oim/configs/{env}.yaml` |
-| `--env` selects | the 2D scenario | the config file (`point_clutter`, `xarm6_clutter`) |
+Run files hold only what was *observed*. Success, goal error, execution time
+and frequency are derived by `run_eval`, so a new metric or a stricter
+tolerance costs a second rather than a re-run.
 
 ### Single runs
 
 ```bash
-# ADMM object-informed MPPI, point pusher, interactive viewer
-uv run python examples/pusht.py admm
-uv run python -m oim.run_launch admm              # same, config-driven
-
-# 6-DoF xArm6; mixed inner solvers per block
-uv run python examples/pusht.py --robot xarm6 admm
-uv run python examples/pusht.py admm --robot-opt cem --object-opt cbo
-
-# No display: N steps, mp4 + diagnostics plot + JSON
+# 3D xArm6: MPPI object block, 600 headless steps, mp4 + consensus overlay
 uv run python examples/pusht.py --robot xarm6 --record admm \
-    --headless --steps 600
+    --object-opt mppi --headless --steps 600 --show-plans
 
-# Overlay both blocks' predicted object paths
-uv run python examples/pusht.py --robot xarm6 admm --show-plans
-
-# Flat (non-hierarchical) baseline on the same task
-uv run python examples/pusht.py mppi
-
-# 2D: same algorithm, analytic physics
-uv run python examples/pusht.py --world 2d admm
-uv run python examples/pusht.py --world 2d --env corridor admm
-uv run python examples/pusht.py --world 2d --no-jit admm --steps 3
+# 2D gate: contact-action object block, animated, eager for a debugger
+uv run python examples/pusht.py --world 2d --env gate --contact-action \
+    --no-jit --animate admm --n-admm 12 --rho 20 --steps 40 --seed 3
 ```
 
-**Flag order matters**: scene and world flags go *before* the algorithm
-name, solver and run flags *after* it.
+World and scene flags go **before** the algorithm name, solver and run flags
+**after** it.
 
 | Flag | Default | |
 | --- | --- | --- |
 | ***before the algorithm*** | | |
-| `--world {3d,2d}` | `3d` | Which world |
+| `--world {3d,2d}` | `3d` | `3d`: MJX contact, point or xArm6 robot, `admm`/`mppi`/`ps`. `2d`: analytic single-point contact, disc robot, `admm` only — same ADMM code, for separating algorithm bugs from simulator bugs |
 | `--samples`, `--horizon` | 64, 15 | Rollouts per block, consensus horizon $H$ |
 | `--robot {point,xarm6}` | `point` | *3D:* embodiment; `xarm6` implies clutter |
-| `--record` | off | *3D:* mp4 (needs `ffmpeg`); combines with `--headless`, which renders offscreen |
-| `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts |
-| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (in `run_launch`, the config file instead) |
+| `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
+| `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, since Warp allocates outside that pool and otherwise cannot build its CUDA graphs |
+| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (below) |
 | `--contact-action` | off | *2D:* object block decides $[p, f_n, f_t]$, not the wrench ([below](#object-action-parameterization)) |
 | `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
 | ***after the algorithm*** | | |
@@ -103,63 +82,82 @@ name, solver and run flags *after* it.
 | `--n-admm` | 8 | Max ADMM iterations per control step |
 | `--rho`, `--gamma` | 10.0, 0.1 | Penalty $\rho$, proximal weight $\gamma$ |
 | `--steps`, `--seed` | 200, 5 | Control steps, RNG seed |
-| `--headless` | off | *3D:* no viewer; run `--steps` and save |
-| `--show-plans` | off | *3D:* overlay both blocks' predicted paths |
-| `--eval`, `--trials`, `--seed0` | off, 5, 0 | Multi-seed evaluation (below) |
+| `--headless` | off | No viewer; run `--steps` and save a run file |
+| `--show-plans` | off | *3D:* overlay both blocks' predicted object paths — **amber** what the object block intends ($x^{o*}$), **teal** what the robot block would produce; their gap is the primal residual, made spatial. Costs 1.7% of a control step |
+| *not exposed* | | Shared by both worlds: $\epsilon_r = \epsilon_s = 0.5$, noise annealing off, wrench bounds $\pm D^{-1}$, success tolerance 5 cm / 0.05 rad |
 
-Solver values are shared by both worlds, as is everything not exposed as a
-flag — $\epsilon_r = \epsilon_s = 0.5$, noise annealing off, wrench bounds
-at $\pm D^{-1}$. `run_launch` takes all of them from YAML and spells the 2D
-negatives as `--obstacles`/`--relocate` pairs.
-
-**2D scenarios** ([`oim/sim2d/scenarios.py`](oim/sim2d/scenarios.py)).
-`clutter` always leaves a way round, so a planner can look healthy on it
-while being unable to commit to a passage — hence the other two, whose
-clearances `tests/test_sim2d.py` bounds at $0 <$ clearance $< 50$ mm.
-
-| `--env` | Stresses | Straight-line clearance |
+| `--env` | Stresses | Clearance |
 | --- | --- | --- |
-| `clutter` | routing *around* obstacles; mirrors the MJX scene exactly | 41 mm |
+| `clutter` | routing *around* obstacles; mirrors the MJX scene exactly. Always leaves a way round, so a planner can pass it while unable to commit to a passage | 41 mm |
 | `corridor` | pushing *through* a narrow horizontal channel | 15 mm |
 | `gate` | a vertical slot, then rotating to the goal | 5 mm |
 
-**`--show-plans`** draws both blocks' predicted trajectories of the *same*
-object, turning the wrench consensus into something visible: **amber** is
-what the object block intends ($x^{o*}$), **teal** what the robot block
-would actually produce. Where they part is the primal residual, made
-spatial. Bars show predicted heading; alpha fades along the horizon. Works
-live and in `--record` video, and `--headless` logs both plans
-`(steps_run, H, 3)` for offline analysis. Costs 1.7% of a control step
-(6.2 ms against `optimize`'s 361 ms) — recomputed on demand, so with the
-flag off nothing runs.
+| Output | When |
+| --- | --- |
+| `results/runs/*.json` | `--headless` — settings, scene, per-step states/controls/wrenches/residuals/timings. Same keys and frames in both worlds; each carries a `schema` block |
+| `recordings/*.png` | always (2D), `--headless` (3D) — trajectory + residuals |
+| `recordings/*.gif` / `*.mp4` | `--animate` / `--record` |
+
+### Sweeps
+
+```yaml
+# oim/configs/run_launch_config.yaml
+sweep:
+  task: [{ world: 3d, robot: point }, { world: 3d, robot: xarm6 }]
+  algorithm: [admm, mppi]
+  horizon: [5, 15, 25]
+  seed: [0, 1, 2, 3, 4]
+fixed: { steps: 200, headless: true }
+```
+
+```bash
+uv run python -m oim.run_launch                        # the whole product
+uv run python -m oim.run_launch --dry-run              # print, run nothing
+uv run python -m oim.run_launch --only algorithm=admm  # narrow it
+uv run python -m oim.run_launch --warp --set steps=50  # override `fixed:`
+```
+
+| | |
+| --- | --- |
+| Axes | `task`, `algorithm`, `robot_opt`, `object_opt`, `horizon`, `samples`, `n_admm`, `seed` — anything `examples/pusht.py` takes as a flag. An empty list drops the axis, leaving `pusht.py`'s own default |
+| `fixed:` | applied to every cell; override per sweep with `--set key=value` (`--warp` is shorthand for `--set warp=true`). Unknown keys are rejected before the first cell runs |
+| Order | outermost axis first: every algorithm, horizon and seed of task 1 finishes before task 2 starts |
+| Invalid cells | dropped: 2D has no flat baselines, and a flat baseline has no ADMM blocks to sweep |
+| Isolation | one subprocess per cell, so a crash or OOM costs one cell, not the sweep, and each run gets the whole GPU and a clean allocator |
+| GPU barrier | waits for the previous cell's memory to be released before starting the next, and reports free MiB per cell. `--min-free-mib N` additionally requires headroom (the xArm6 ADMM cell peaks near 12000) |
+| On failure | logged and skipped (`--stop-on-error` to abort instead) |
+| Manifest | `results/sweeps/sweep_*.json` — each cell's settings, exact command, exit status, duration |
 
 ### Evaluation
 
 ```bash
-# 5 seeds; in 3D this also runs the flat baselines at the same sampler budget
-uv run python examples/pusht.py admm --eval --trials 5 --steps 200
-uv run python -m oim.run_launch --env xarm6_clutter admm --eval --trials 5
+uv run python -m oim.run_eval                        # every run, auto-grouped
+
+# pick the tasks, algorithms and horizons to summarise, one row each
+uv run python -m oim.run_eval \
+    --filter task=pusht3d_point,pusht3d_xarm6 \
+    --filter algorithm=admm,mppi \
+    --filter horizon=5,15,25 \
+    --group-by task algorithm horizon --format markdown
+
+uv run python -m oim.run_eval --pos-tol 0.02         # re-score, no re-running
 ```
 
-Runs `--trials` seeds instead of one recorded run and aggregates success
-rate, position/orientation error (mean & std), frequency and execution time
-via [`oim/utils/metrics.py`](oim/utils/metrics.py). Running the flat
-baselines alongside judges the hierarchy against a bigger-search
-alternative rather than only itself — which is why `run_launch` is the
-better entry point here: every method then shares one config.
-
-Every artifact of a run shares the stem `{family}_{variant}_{method}_{ts}`:
-
-| Path | When |
+| | |
 | --- | --- |
-| `recordings/pusht{2,3}d_*.png` | always (2D), `--headless` (3D) — trajectory + residuals |
-| `recordings/pusht2d_*.gif` / `pusht3d_*.mp4` | `--animate` / `--record` |
-| `results/*_metrics_*.json` | always — hyperparameters, per-step residuals, $\rho$, goal errors, reached |
-| `results/*_states_*.json` | always — static scene once; per-step object pose/twist, robot state, control, wrenches (+ full `qpos`/`qvel` in 3D) |
-| `results/results_eval/` | `--eval` — the aggregated per-method metrics |
+| `--filter KEY=A,B` | keep runs whose field is one of these; repeatable. Values of one field are OR-ed, different fields AND-ed. Any field in the table below, or any recorded hyperparameter |
+| `--group-by` | one table row per distinct combination. Omitted: identity **plus any hyperparameter that varies**, so a horizon sweep grows a horizon column by itself |
+| seeds | always the trials *within* a row, never a row of their own |
 
-Both worlds use the same state-log keys and frames, so runs compare entry
-for entry; each file carries a `schema` block describing its own indexing.
+| Column | Paper | |
+| --- | --- | --- |
+| `SR` | SR | fraction reaching both tolerances, re-derived from the final pose |
+| `eps_d` ± | $\epsilon_d$ | position error, all trials |
+| `eps_d^s` | $\epsilon_d^s$ | position error, successful trials only |
+| `theta` ± | — | orientation error; not in the paper |
+| `T` | $T$ | *simulated* time (`steps_run × dt`), machine-independent; a failed trial is credited the slowest time in the **sweep**, so methods stay comparable |
+| `f (Hz)` | $\bar{f}$ | wall-clock planning rate, from the recorded `compute_time` |
+
 
 ## Method
 
@@ -347,7 +345,6 @@ oim/
 ├── task_base.py          Task; ConsensusTask (the ADMM contract)
 ├── risk.py               AverageCost, WorstCase, CVaR, …
 ├── open_loop.py          offline trajectory optimization + playback
-├── run_launch.py         config-driven entry point
 │
 ├── algs/                 every sampler shares sample_knots / update_params
 │   ├── admm.py           ADMM loop; ConsensusSpace, WrenchConsensus;
@@ -372,9 +369,10 @@ oim/
 │   ├── plan_overlay.py   both blocks' predicted paths, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
-├── configs/              point_clutter.yaml, xarm6_clutter.yaml
+├── run_launch.py         sweep driver;  run_eval.py  post-hoc metrics
+├── configs/              run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
-└── utils/                spline, video, results JSON, metrics
+└── utils/                spline, video, results.py (run files), metrics.py
 ```
 
 One `ADMM.optimize(state, params)` call, top to bottom:

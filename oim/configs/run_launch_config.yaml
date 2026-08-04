@@ -1,0 +1,52 @@
+# Sweep definition for `oim/run_launch.py`.
+#
+# `sweep` lists the values each axis takes; the launcher runs the full
+# cartesian product, invoking `examples/pusht.py` once per combination.
+# `fixed` is passed to every run unchanged. Everything here maps onto a
+# real `examples/pusht.py` flag, so a sweep cell is reproducible by hand:
+# the launcher prints the exact command it ran.
+#
+# Axis order is the nesting order, outermost first -- with `task` first,
+# every algorithm/horizon/seed combination for task 1 finishes before task
+# 2 starts, which is what you want when a sweep is interrupted.
+#
+# Each cell is its own process, so it gets the whole GPU; the launcher
+# waits for the previous cell's memory to come back before starting the
+# next (`--min-free-mib N` to also demand headroom).
+#
+# Cells that make no sense are skipped automatically: the 2D world has no
+# flat baselines (`PushT2D` implements only `ConsensusTask`), and the 2D
+# scenarios/3D robots are selected by the `task` axis below.
+
+sweep:
+  # Each task fixes a world and an embodiment or scenario. `world`/`robot`
+  # for 3D, `world`/`env` for 2D.
+  task:
+    # - { world: 3d, robot: point }
+    - { world: 3d, robot: xarm6 }
+    # - { world: 2d, env: clutter }
+    # - { world: 2d, env: corridor }
+    # - { world: 2d, env: gate }
+
+  algorithm: [admm, mppi]
+
+  # ADMM's inner solvers. Ignored for flat algorithms, which have no
+  # blocks -- the launcher drops the duplicate cells rather than running
+  # the same flat baseline once per (robot_opt, object_opt) pair.
+  robot_opt: [mppi]
+  object_opt: [mppi]
+
+  horizon: []
+  samples: []
+  n_admm: []
+  seed: []
+
+# Applied to every cell. Any `examples/pusht.py` flag works here, and any
+# of them can be overridden for one sweep with `--set key=value` (or
+# `--warp`, shorthand for `--set warp=true`). Unknown keys are rejected
+# before the first cell runs, not once per cell.
+fixed:
+  steps: 200
+  headless: true # no viewer: a sweep cannot wait on a window
+  record: true # an mp4 per cell; --set record=false to skip
+  # warp: true          # MuJoCo Warp backend instead of JAX
