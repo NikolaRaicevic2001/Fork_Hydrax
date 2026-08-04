@@ -114,19 +114,23 @@ def run_real(
               "ADMM+MJX graph (minutes; cached across runs)...")
     # Split the two warm-up calls: the first pays compile + run, the second is
     # a warm run -- so the log shows compile time vs pure execution time.
+    # Discard the output (`_warm`, not `params`): these calls exist only to
+    # compile/time the graph. Keeping `params` at the caller's init_params means
+    # the loop starts from the same point as the sim's run_3d_admm (which never
+    # pre-optimizes), so their first control matches.
     t = time.perf_counter()
-    params, _ = jit_optimize(mjx_data, params)
-    jax.block_until_ready(params)
+    _warm, _ = jit_optimize(mjx_data, params)
+    jax.block_until_ready(_warm)
     if verbose:
         print(f"[jit] optimize compiled + first run: {time.perf_counter() - t:.1f}s")
     t = time.perf_counter()
-    params, _ = jit_optimize(mjx_data, params)
-    jax.block_until_ready(params)
+    _warm, _ = jit_optimize(mjx_data, params)
+    jax.block_until_ready(_warm)
     if verbose:
         print(f"[jit] optimize warm run: {time.perf_counter() - t:.3f}s "
               "(this is the real per-step cost)")
-    _ = jit_interp(jnp.array([world0.time]), params.tk, params.mean[None, ...])
-    jax.block_until_ready(params)
+    _ = jit_interp(jnp.array([world0.time]), _warm.tk, _warm.mean[None, ...])
+    jax.block_until_ready(_warm)
     if verbose:
         print(f"[jit] ready; {'overlapped' if real_time else 'serial'} loop, "
               f"control {control_rate:.0f} Hz, {command_mode}")
