@@ -57,10 +57,7 @@ from oim.utils.results import RunName, save_run_metrics, save_run_states
 PLAN_DT = 0.05      # planner timestep (matches examples/pusht.py)
 HORIZON = 15        # consensus horizon H, in steps of PLAN_DT
 EXEC_TIMESTEP = 0.002  # fine execution timestep for the mock sim
-# Starting arm configuration (deg): stick tip near the block, from the reach
-# sweep in models/xarm6_pusht_clutter/verify_reach.py. Kept in sync with the
-# same constant in examples/pusht.py.
-XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
+# (arm start config is per-scene: SCENES[...]["arm_start_deg"] in oim/tasks/pusht.py)
 
 
 def build_sub_optimizer(name, task, *, plan_horizon, num_knots, spline, seed,
@@ -145,10 +142,9 @@ def build_mock_interface(task, control_rate):
     mj_model.opt.iterations = 100
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
-    # Start pose: arm home config, block at the scene's start SE(2).
-    # TODO(lab): XARM6_START_QPOS_DEG was tuned for the "clutter" base; for a
-    # new scene/base, re-run the reach sweep so the tip starts near the block.
-    mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
+    # Start pose: the scene's arm home config (from SCENES[...]["arm_start_deg"],
+    # reachable + collision-free for that scene's base) and block start SE(2).
+    mj_data.qpos[:5] = [math.radians(q) for q in task.arm_start_deg]
     mj_data.qpos[5:8] = list(task.start)
     sim_steps_per_send = max(1, round((1.0 / control_rate) / EXEC_TIMESTEP))
     return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send)

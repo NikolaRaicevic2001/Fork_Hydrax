@@ -52,6 +52,7 @@ SCENES = {
         "world_frame": "world",
         "goal": GOAL,
         "start": (0.0, 0.0, 0.0),
+        "arm_start_deg": [-15.43, 100.0, -185.36, 0.0, 60.0],
         "obstacles": CLUTTER_OBSTACLES,
         "block": dict(),  # default 180 mm T (matches the original MJCF)
         "mass": 2.0,
@@ -69,6 +70,9 @@ SCENES = {
         "goal":
             jnp.array([0.381, -0.305, jnp.pi / 2]),
         "start": (0.381, 0.343, 0.0),
+        # Reachable, collision-free start with the stick tip just behind the
+        # block (from IK against this scene's origin base placement).
+        "arm_start_deg": [49.2, 34.8, -80.6, 0.0, 45.9],
         "obstacles":
             ObstacleField([
                 Box(center=[0.318, 0.178],
@@ -251,12 +255,14 @@ class PushT(Task, ConsensusTask):
                 lsr_v = cfg["limit_surface_radius"]
                 self.start = cfg["start"]
                 self.world_frame = cfg["world_frame"]
+                self.arm_start_deg = cfg["arm_start_deg"]
             else:
                 goal_v, obstacles_v = GOAL, CLUTTER_OBSTACLES
                 block_v = dict()
                 mass_v, mu_v, lsr_v = 2.0, 0.4, 0.06
                 self.start = (0.0, 0.0, 0.0)
                 self.world_frame = "world"
+                self.arm_start_deg = None  # point robot has no arm start
 
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
