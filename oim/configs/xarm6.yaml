@@ -1,13 +1,16 @@
-# Hyperparameters for the "xarm6_clutter" environment (xArm6 3D robot,
-# clutter scene), read by oim/run_launch.py.
+# Hyperparameters for the xArm6 robot, read by oim/run_launch.py.
 #
-# Copied from point_clutter.yaml (task 11/12): xArm6 needs its own tuning
+# Copied from point.yaml (task 11/12): xArm6 needs its own tuning
 # (sampler/ADMM hyperparameters, execution model) independent of the point
 # robot's, since a shared file meant every xArm6 tuning change also applied
 # (untested) to the point robot. `world2d`'s fields are unused for this
-# robot but kept for schema consistency with point_clutter.yaml.
+# robot but kept for schema consistency with point.yaml.
 #
-# --env selects this file (oim/configs/{env}.yaml).
+# --robot xarm6 selects this file (oim/configs/{robot}.yaml). One file for
+# every 3D scene variant this robot runs -- --env (a CLI flag, not anything
+# in here) picks the scene (see oim/tasks/pusht.py's `env` parameter), so
+# every scene is compared under identical hyperparameters. Nothing below is
+# scene-specific.
 
 world3d:
   robot: xarm6 # point | xarm6
@@ -61,7 +64,7 @@ admm:
   # Residual-driven noise annealing (paper Algorithm 4 step 8) is off: the
   # primal residual never converges for this task, so noise just sits
   # pinned near noise_max instead of annealing -- confirmed to make
-  # divergence worse (see cost_formulation_and_results_eval.md task 9).
+  # divergence worse (see Tasks.md's history, task 9 in the old numbering).
   noise_min: 0.0
   noise_kappa: 0.0
   noise_max: 0.0

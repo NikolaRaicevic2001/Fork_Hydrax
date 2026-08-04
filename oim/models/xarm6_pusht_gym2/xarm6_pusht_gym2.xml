@@ -1,0 +1,85 @@
+<mujoco model="xarm6_pusht_gym2">
+  <!-- "gym2": converted from the Object-Informed-Manipulation (IsaacGym)
+       repo's conf/task/sim_task02.yaml ("push the tee block avoiding an
+       obstacle"). Structure copied from ../xarm6_pusht_clutter/ (same
+       option/defaults/xarm6 include/sensors) -- what differs is the
+       T-block's own size (block_crossbar/block_stem, goal_crossbar/
+       goal_stem below) and a single obstacle instead of three.
+
+       T-block half-extents/offset are taken directly from that repo's
+       assets/urdf/tee_block/tee_block.urdf (crossbar box size "0.2 0.05
+       0.05", stem box size "0.05 0.1 0.05" at y-offset -0.075 -- URDF
+       gives full extents, MJCF geom "size" wants half-extents, so both are
+       halved here). See oim/tasks/pusht.py's GYM2_FOOTPRINT_KW, which must
+       stay in sync with the geoms below, same as the clutter scene's own
+       comment says for t_shape_footprint().
+
+       Block/goal/obstacle positions are IsaacGym's own literal numbers
+       (confirmed identical across every sim_taskNN.yaml -- see
+       oim/tasks/pusht.py) *translated* so the block's body anchor sits at
+       (0,0): PushT._block_pose reads qpos directly for robot="xarm6" (not
+       xpos), which is the T_x/T_y joints' displacement from this body's
+       own "pos", not the true world position -- every other scene keeps
+       that anchor at (0,0) so the two coincide; sim_task02's own block
+       starts at (0.7,-0.45), so reusing that literally here would silently
+       feed the wrong absolute position into every cost term. Translating
+       the whole layout by (-0.7,+0.45) preserves every real relative
+       distance/angle (block, 0.7,-0.45 -> 0,0; goal, 0.9,0.30 -> 0.2,0.75;
+       obstacle, 0.9,0.05 -> 0.2,0.5; arm base, 0.4,0 -> -0.3,0.45, see
+       GYM2_XARM6_BASE_POS) while fixing the anchor. Goal is still a
+       180-degree flip, quat [0,0,0,1] = pi about z. -->
+  <option timestep="0.01" gravity="0 0 -9.81" iterations="20" ls_iterations="20" integrator="implicitfast"/>
+
+  <include file="../xarm6/xarm6.xml"/>
+
+  <default>
+    <geom friction="0.5 0.005 0.0001" solref="0.004 1" solimp="0.9 0.95 0.001"/>
+    <default class="goal">
+      <geom conaffinity="0" contype="0" rgba="0 1 0 0.3"/>
+    </default>
+    <default class="obstacle">
+      <geom conaffinity="1" contype="1" rgba="0.5 0.5 0.5 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!-- Fixed recording camera, front-on: arm reaching towards camera,
+         block/obstacle/goal laid out in a row -- matching the
+         Object-Informed-Manipulation (IsaacGym) repo's own reference
+         screenshots. Derived from a free camera at azimuth=180,
+         elevation=-25, distance=1.1, lookat=(-0.05, 0.375, 0.15) (the
+         gym2 workspace's own center, see scene.xml's <statistic>),
+         converted to explicit pos/xyaxes since MJCF <camera> has no
+         azimuth/elevation/distance/lookat form. Confirmed via a rendered
+         check, not derived blind. -->
+    <camera name="front" pos="0.9469 0.3410 0.6149"
+      xyaxes="0.0000 1.0000 -0.0000 -0.4226 0.0000 0.9063"/>
+
+    <!-- Mirrors the block's geoms exactly, at the goal pose -- same
+         convention as xarm6_pusht_clutter.xml. Keep in sync with
+         block_crossbar/block_stem below and with
+         oim.tasks.pusht.GYM2_FOOTPRINT_KW. -->
+    <body name="goal" mocap="true" pos="0.2 0.75 0.025" quat="0 0 0 1">
+      <geom class="goal" name="goal_crossbar" type="box" size="0.100 0.025 0.025" pos="0.0 0.0 0.0"/>
+      <geom class="goal" name="goal_stem" type="box" size="0.025 0.050 0.025" pos="0.0 -0.075 0.0"/>
+    </body>
+
+    <body name="block" pos="0.0 0.0 0.025">
+      <joint name="T_x" type="slide" axis="1 0 0" frictionloss="7.848" damping="0.0"/>
+      <joint name="T_y" type="slide" axis="0 1 0" frictionloss="7.848" damping="0.0"/>
+      <joint name="T_z" type="hinge" axis="0 0 1" frictionloss="0.47088" damping="0.0"/>
+      <geom name="block_crossbar" type="box" size="0.100 0.025 0.025" pos="0.0 0.0 0.0" mass="1.0" rgba="0.2 0.45 0.85 1"/>
+      <geom name="block_stem" type="box" size="0.025 0.050 0.025" pos="0.0 -0.075 0.0" mass="1.0" rgba="0.2 0.45 0.85 1"/>
+    </body>
+
+    <!-- Single obstacle (sim_task02's static "block" actor), position and
+         half-extents from that actor's own config (box, full size
+         0.1x0.1x0.1 m, init_pos [0.9, 0.05, 0.195], translated as above). -->
+    <geom class="obstacle" name="obs_box" type="box" size="0.05 0.05 0.025" pos="0.2 0.5 0.025"/>
+  </worldbody>
+
+  <sensor>
+    <framepos name="position" objtype="body" objname="block" reftype="body" refname="goal"/>
+    <framequat name="orientation" objtype="body" objname="block" reftype="body" refname="goal"/>
+  </sensor>
+</mujoco>
