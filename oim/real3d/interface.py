@@ -205,6 +205,8 @@ class Ros2Interface(RobotWorldInterface):
         enable_commands: bool = True,
         twist_filter_alpha: float = 0.4,
         watchdog_timeout: float = 1.0,
+        object_staleness_limit: float = 0.5,
+        startup_timeout: float = 30.0,
     ) -> None:
         import rclpy  # noqa: PLC0415
         from rclpy.node import Node  # noqa: PLC0415
@@ -236,6 +238,11 @@ class Ros2Interface(RobotWorldInterface):
         self._prev_t: Optional[float] = None
         self._twist_lp = np.zeros(3)
         self._last_cmd_time = time.monotonic()
+        # Last good object pose, to hold through transient FoundationPose TF
+        # gaps (up to object_staleness_limit) instead of crashing.
+        self._staleness_limit = object_staleness_limit
+        self._last_se2: Optional[np.ndarray] = None
+        self._last_se2_time: Optional[float] = None
 
         # /joint_states publishes the arm joints (ROS_ARM_JOINT_NAMES =
         # joint1..joint5) in an arbitrary order -- reindex by name once.
@@ -270,6 +277,32 @@ class Ros2Interface(RobotWorldInterface):
                                              args=(self._node,),
                                              daemon=True)
         self._spin_thread.start()
+
+        # Block until /joint_states and the object TF are both available, so
+        # the driver waits for the robot + FoundationPose to come up instead of
+        # crashing on the first read.
+        self._wait_until_ready(startup_timeout)
+
+    def _wait_until_ready(self, timeout: float) -> None:
+        """Wait for the first /joint_states and object TF (or time out)."""
+        self._node.get_logger().info(
+            "waiting for /joint_states and the object TF...")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                have_arm = self._arm_qpos is not None
+            try:
+                self._lookup_object_se2()  # populates _last_se2 on success
+                have_obj = True
+            except Exception:  # noqa: BLE001
+                have_obj = False
+            if have_arm and have_obj:
+                self._node.get_logger().info("robot + object TF ready")
+                return
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"timed out after {timeout}s waiting for /joint_states and TF "
+            f"'{self._object_frame}' (is the robot bringup + FoundationPose up?)")
 
     def _publish_base_tf(self, tf2_ros, world_frame, base_frame, base_z) -> None:
         """Broadcast the static world -> base transform from XARM6_BASE_POS.
@@ -321,17 +354,38 @@ class Ros2Interface(RobotWorldInterface):
         FoundationPose gives a full 6D pose; the push-T task only models the
         planar (x, y, yaw) DOFs, so drop z/roll/pitch and keep the yaw about
         the table normal (see notes in oim/tasks/pusht.py).
+
+        On a transient TF gap (a dropped FoundationPose frame) the last good
+        pose is reused, up to `object_staleness_limit`; a longer outage raises
+        rather than pushing on a stale pose.
         """
         from scipy.spatial.transform import Rotation  # noqa: PLC0415
+        from tf2_ros import (  # noqa: PLC0415
+            ConnectivityException,
+            ExtrapolationException,
+            LookupException,
+        )
 
-        tf = self._tf_buffer.lookup_transform(self._world_frame,
-                                              self._object_frame,
-                                              self._rclpy.time.Time())
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._world_frame, self._object_frame, self._rclpy.time.Time())
+        except (LookupException, ConnectivityException,
+                ExtrapolationException) as exc:
+            fresh = (self._last_se2 is not None and self._last_se2_time is not None
+                     and time.monotonic() - self._last_se2_time <= self._staleness_limit)
+            if fresh:
+                return self._last_se2  # transient gap: hold the last good pose
+            raise RuntimeError(
+                f"object TF '{self._object_frame}' unavailable for more than "
+                f"{self._staleness_limit}s (FoundationPose lost/tracking?)") from exc
+
         p = tf.transform.translation
         q = tf.transform.rotation
         yaw = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_euler("xyz")[2]
         # TODO(lab): confirm the yaw axis matches the block's T_z hinge sign.
-        return np.array([p.x, p.y, yaw])
+        se2 = np.array([p.x, p.y, yaw])
+        self._last_se2, self._last_se2_time = se2, time.monotonic()
+        return se2
 
     # -- interface -----------------------------------------------------
     def read_state(self) -> WorldState:
