@@ -55,6 +55,11 @@ from oim.real3d.interface import RobotWorldInterface, SceneAddresses, clamp_velo
 from oim.sim3d.run import _finalize_log, _init_log, _log_step
 from oim.tasks.pusht import PushT
 
+# Forward kinematics for the assembled state, JIT-compiled once and reused --
+# calling mjx.forward un-jitted every control step dispatches thousands of tiny
+# GPU kernels eagerly (~150 s/step); jitted it is milliseconds.
+_jit_forward = jax.jit(mjx.forward)
+
 
 def run_real(
     task: PushT,
@@ -293,4 +298,4 @@ def _assemble_state(
     mjx_data = base_data.replace(
         qpos=jnp.asarray(qpos), qvel=jnp.asarray(qvel), time=float(world.time)
     )
-    return mjx.forward(task.model, mjx_data)
+    return _jit_forward(task.model, mjx_data)
