@@ -18,11 +18,11 @@ here, so a new metric never costs a re-run.
 """
 
 import argparse
-import math
 import os
 import sys
 from contextlib import nullcontext
 from copy import deepcopy
+from typing import Optional
 
 import jax
 import mujoco
@@ -74,9 +74,45 @@ if "--warp" in sys.argv:
 
 SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
-# Joint config (degrees) putting the xArm6's stick tip near the block's
-# start; found via oim/models/xarm6_pusht_clutter/verify_reach.py.
+# Joint config (degrees) putting the xArm6's stick tip near the clutter
+# scene's block start; found via
+# oim/models/xarm6_pusht_clutter/verify_reach.py. Fallback only -- a scene
+# with its own workspace (e.g. gym2) should define a "start" keyframe
+# instead (see `_xarm6_start_qpos`), not another entry here.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
+
+
+def _xarm6_start_qpos(mj_model: mujoco.MjModel) -> np.ndarray:
+    """Initial qpos for an xArm6 scene.
+
+    Reads the model's own "start" keyframe if it defines one -- every
+    scene besides the original clutter layout should, since each has a
+    different workspace and needs its own tip-near-the-block starting
+    pose -- falling back to `XARM6_START_QPOS_DEG` otherwise. Generic over
+    `mj_model.nq` so it also covers the block's own qpos entries.
+    """
+    key_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_KEY, "start")
+    if key_id >= 0:
+        return np.array(mj_model.key_qpos[key_id])
+    qpos = np.zeros(mj_model.nq)
+    qpos[:5] = np.radians(XARM6_START_QPOS_DEG)
+    return qpos
+
+
+def _named_camera(
+    mj_model: mujoco.MjModel, name: str = "front"
+) -> Optional[str]:
+    """`name` if the model defines a camera by that name, else `None`.
+
+    `None` means the default free camera framing the whole scene -- what
+    every scene got before any of them defined their own. A scene with a
+    layout the default camera frames badly (e.g. gym2, viewed from the
+    side by default) defines its own fixed camera instead of a special
+    case here.
+    """
+    if mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_CAMERA, name) >= 0:
+        return name
+    return None
 
 # One definition of "reached", passed explicitly to every runner and
 # recorded into every run file. The runners' own defaults disagree (2D
@@ -412,8 +448,7 @@ def _build_admm_3d(args: argparse.Namespace) -> tuple:
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
     if args.robot == "xarm6":
-        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
-        mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
+        mj_data.qpos[:] = _xarm6_start_qpos(mj_model)
     else:
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
     return task, ctrl, mj_model, mj_data
@@ -426,6 +461,7 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
         f"robot={args.robot_opt}, object={args.object_opt}"
     )
     task, ctrl, mj_model, mj_data = _build_admm_3d(args)
+    camera = _named_camera(mj_model)
 
     if args.headless:
         name = RunName(
@@ -446,6 +482,7 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
             goal_theta_tol=GOAL_THETA_TOL,
             record_dir=out_dir if args.record else None,
             record_name=name(),
+            camera=camera,
             show_plans=args.show_plans,
         )
         save_run(
@@ -491,6 +528,11 @@ def _run_3d_admm_once(args: argparse.Namespace) -> None:
             mj_model,
             mj_data,
             frequency=1.0 / 0.05,
+            fixed_camera_id=(
+                mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
+                if camera
+                else None
+            ),
             show_traces=False,
             record_video=args.record,
             recording_prefix=f"pusht3d_{args.robot}_admm_{args.robot_opt}_{args.object_opt}",
@@ -548,8 +590,7 @@ def _run_3d_flat_once(args: argparse.Namespace) -> None:
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
     if args.robot == "xarm6":
-        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
-        mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
+        mj_data.qpos[:] = _xarm6_start_qpos(mj_model)
     else:
         mj_data.qpos = [0.1, 0.1, 1.3, 0.0, 0.0]
 
@@ -650,8 +691,7 @@ def _build_flat_3d(method: str, args: argparse.Namespace, dt: float) -> tuple:
     mj_model.opt.ls_iterations = 50
     mj_data = mujoco.MjData(mj_model)
     if args.robot == "xarm6":
-        mj_data.qpos[:5] = [math.radians(q) for q in XARM6_START_QPOS_DEG]
-        mj_data.qpos[5:8] = [0.0, 0.0, 0.0]  # block
+        mj_data.qpos[:] = _xarm6_start_qpos(mj_model)
     else:
         mj_data.qpos[:] = [0.0, 0.0, 0.0, -0.05, -0.06]
     return task, ctrl, mj_model, mj_data

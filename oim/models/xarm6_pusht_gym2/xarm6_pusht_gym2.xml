@@ -82,4 +82,19 @@
     <framepos name="position" objtype="body" objname="block" reftype="body" refname="goal"/>
     <framequat name="orientation" objtype="body" objname="block" reftype="body" refname="goal"/>
   </sensor>
+
+  <!-- Starting arm pose, read generically by examples/pusht.py (looks for
+       a keyframe named "start", falling back to its own clutter-tuned
+       constant if a scene doesn't define one) -- so a new scene supplies
+       its own starting pose here, not another branch in the launcher.
+       Found the same way as xarm6_pusht_clutter's own constant (a grid
+       search maximizing margin from every joint's own range limit, not
+       just tip position/tilt): tip within 0.037m of the block start
+       (0, 0), 10-degree tilt, every joint within 36-64% of its own range.
+       qpos order: 5 arm joints (radians), then T_x/T_y/T_z = 0 (block at
+       its own declared "pos", no offset). -->
+  <keyframe>
+    <key name="start"
+      qpos="-1.029744 0.541052 -1.291544 0.174533 0.872665 0.0 0.0 0.0"/>
+  </keyframe>
 </mujoco>
