@@ -43,6 +43,19 @@
   </default>
 
   <worldbody>
+    <!-- Tabletop, IsaacGym's own real dimensions (assets/urdf's "table"
+         actor: box, full size 1.40 x 2.50 x 0.14 m, init_pos
+         [1.0, 0.0, 0.07]), translated by the same (-0.7, +0.45) as
+         everything else in this file so it lands under the actual
+         workspace (arm base, block, obstacle, goal all fall well within
+         its footprint: x in [-0.4, 1.0], y in [-0.8, 1.7]). Positioned so
+         its top surface is z=0 -- this repo's existing height convention
+         (block/goal/obstacle all sit at z=0.025, their own half-height
+         above z=0) -- rather than IsaacGym's own z=0.14 top, which is a
+         reference-frame difference, not a size change. -->
+    <geom name="table" type="box" size="0.70 1.25 0.07" pos="0.3 0.45 -0.07"
+      rgba="0.95 0.95 0.95 1"/>
+
     <!-- Fixed recording camera, front-on: arm reaching towards camera,
          block/obstacle/goal laid out in a row -- matching the
          Object-Informed-Manipulation (IsaacGym) repo's own reference
@@ -87,14 +100,18 @@
        a keyframe named "start", falling back to its own clutter-tuned
        constant if a scene doesn't define one) -- so a new scene supplies
        its own starting pose here, not another branch in the launcher.
-       Found the same way as xarm6_pusht_clutter's own constant (a grid
-       search maximizing margin from every joint's own range limit, not
-       just tip position/tilt): tip within 0.037m of the block start
-       (0, 0), 10-degree tilt, every joint within 36-64% of its own range.
-       qpos order: 5 arm joints (radians), then T_x/T_y/T_z = 0 (block at
-       its own declared "pos", no offset). -->
+
+       A genuine rest pose, not a pose pre-placed at the block: joints
+       1/2/4/5 at zero (verify_model.py's own "zero" configuration for
+       this arm, see oim/models/xarm6/verify_model.py) with only joint 3
+       (elbow) nudged -10 degrees off zero so the tip clears the tabletop
+       (the raw zero configuration puts it ~0.02m *below* z=0, which would
+       start inside the table added below). Tip lands near
+       (0.0, 0.45, 0.02) -- close to the base, well short of the block at
+       (0, 0) -- so ADMM has to actually drive the arm out to first
+       contact, the way a real deployment would start. -->
   <keyframe>
     <key name="start"
-      qpos="-1.029744 0.541052 -1.291544 0.174533 0.872665 0.0 0.0 0.0"/>
+      qpos="0.0 0.0 -0.174533 0.0 0.0 0.0 0.0 0.0"/>
   </keyframe>
 </mujoco>

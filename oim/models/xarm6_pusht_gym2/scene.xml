@@ -20,7 +20,12 @@
 
   <worldbody>
     <light pos="0.2 0.2 1"/>
-    <geom name="floor" size="0 0 .125" type="plane" material="groundplane"/>
+    <!-- Room floor, pushed down to the tabletop's own bottom face
+         (xarm6_pusht_gym2.xml's "table" geom, top at z=0, thickness
+         0.14) so it reads as a floor the table stands on rather than
+         z-fighting with the tabletop surface everything actually sits
+         on. -->
+    <geom name="floor" size="0 0 .125" type="plane" pos="0 0 -0.14" material="groundplane"/>
   </worldbody>
 
 </mujoco>
