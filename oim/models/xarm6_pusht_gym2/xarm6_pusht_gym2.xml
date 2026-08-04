@@ -14,12 +14,20 @@
        stay in sync with the geoms below, same as the clutter scene's own
        comment says for t_shape_footprint().
 
-       Block/goal/obstacle positions ARE a literal coordinate copy of
-       sim_task02.yaml/tee_block.yaml/block.yaml's own world-frame numbers
-       (confirmed identical across every sim_taskNN.yaml, see
-       oim/tasks/pusht.py) -- (0.7,-0.45) block start, (0.9,0.30) goal
-       (180-degree flip, quat [0,0,0,1] = pi about z), (0.9,0.05) obstacle,
-       all at the real xArm6 scale IsaacGym itself uses, not rescaled. -->
+       Block/goal/obstacle positions are IsaacGym's own literal numbers
+       (confirmed identical across every sim_taskNN.yaml -- see
+       oim/tasks/pusht.py) *translated* so the block's body anchor sits at
+       (0,0): PushT._block_pose reads qpos directly for robot="xarm6" (not
+       xpos), which is the T_x/T_y joints' displacement from this body's
+       own "pos", not the true world position -- every other scene keeps
+       that anchor at (0,0) so the two coincide; sim_task02's own block
+       starts at (0.7,-0.45), so reusing that literally here would silently
+       feed the wrong absolute position into every cost term. Translating
+       the whole layout by (-0.7,+0.45) preserves every real relative
+       distance/angle (block, 0.7,-0.45 -> 0,0; goal, 0.9,0.30 -> 0.2,0.75;
+       obstacle, 0.9,0.05 -> 0.2,0.5; arm base, 0.4,0 -> -0.3,0.45, see
+       GYM2_XARM6_BASE_POS) while fixing the anchor. Goal is still a
+       180-degree flip, quat [0,0,0,1] = pi about z. -->
   <option timestep="0.01" gravity="0 0 -9.81" iterations="20" ls_iterations="20" integrator="implicitfast"/>
 
   <include file="../xarm6/xarm6.xml"/>
@@ -39,12 +47,12 @@
          convention as xarm6_pusht_clutter.xml. Keep in sync with
          block_crossbar/block_stem below and with
          oim.tasks.pusht.GYM2_FOOTPRINT_KW. -->
-    <body name="goal" mocap="true" pos="0.9 0.30 0.025" quat="0 0 0 1">
+    <body name="goal" mocap="true" pos="0.2 0.75 0.025" quat="0 0 0 1">
       <geom class="goal" name="goal_crossbar" type="box" size="0.100 0.025 0.025" pos="0.0 0.0 0.0"/>
       <geom class="goal" name="goal_stem" type="box" size="0.025 0.050 0.025" pos="0.0 -0.075 0.0"/>
     </body>
 
-    <body name="block" pos="0.7 -0.45 0.025">
+    <body name="block" pos="0.0 0.0 0.025">
       <joint name="T_x" type="slide" axis="1 0 0" frictionloss="7.848" damping="0.0"/>
       <joint name="T_y" type="slide" axis="0 1 0" frictionloss="7.848" damping="0.0"/>
       <joint name="T_z" type="hinge" axis="0 0 1" frictionloss="0.47088" damping="0.0"/>
@@ -54,8 +62,8 @@
 
     <!-- Single obstacle (sim_task02's static "block" actor), position and
          half-extents from that actor's own config (box, full size
-         0.1x0.1x0.1 m, init_pos [0.9, 0.05, 0.195]). -->
-    <geom class="obstacle" name="obs_box" type="box" size="0.05 0.05 0.025" pos="0.9 0.05 0.025"/>
+         0.1x0.1x0.1 m, init_pos [0.9, 0.05, 0.195], translated as above). -->
+    <geom class="obstacle" name="obs_box" type="box" size="0.05 0.05 0.025" pos="0.2 0.5 0.025"/>
   </worldbody>
 
   <sensor>

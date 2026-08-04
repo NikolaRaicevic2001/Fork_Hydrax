@@ -43,19 +43,25 @@ XARM6_BASE_YAW_DEG = -90.0
 # taken directly from that repo's `assets/urdf/tee_block/tee_block.urdf` --
 # it's noticeably bigger than `t_shape_footprint()`'s clutter-scene default.
 #
-# Goal/obstacle/block-start positions ARE a literal coordinate copy of
-# sim_task02.yaml/tee_block.yaml/block.yaml's own world-frame numbers
-# (confirmed identical -- arm base, block start, goal -- across every
-# sim_taskNN.yaml, and via docs/static/results/figures/sim_tasks.png):
-# block starts at (0.7, -0.45), goal at (0.9, 0.30), obstacle at
-# (0.9, 0.05), all real xArm6-scale meters, not rescaled to this repo's
-# other scene. The goal orientation is IsaacGym's own quat ([0,0,1,0]
-# xyzw), a 180-degree flip about z from the block's spawn orientation
-# (theta=0, matching `t_shape_footprint()`'s own implicit zero), hence
-# `jnp.pi` below, not an arbitrary angle.
-GYM2_GOAL = jnp.array([0.9, 0.30, jnp.pi])
+# Goal/obstacle/arm-base positions are IsaacGym's own literal world-frame
+# numbers (confirmed identical -- arm base, block start, goal -- across
+# every sim_taskNN.yaml, and via docs/static/results/figures/sim_tasks.png:
+# block starts at (0.7, -0.45), goal at (0.9, 0.30), obstacle at (0.9, 0.05),
+# arm base at (0.4, 0)) *translated* by (-0.7, +0.45) so the block's own
+# start lands at (0, 0). That's required, not a stylistic choice:
+# `_block_pose` reads `qpos` directly for `robot="xarm6"`, which is the
+# T_x/T_y joints' displacement from the block body's MJCF-declared anchor,
+# not the true world position -- every other scene keeps that anchor at
+# (0, 0) so the two coincide, and this one must too or every cost term
+# below silently compares the wrong quantity against `self.goal`. The
+# translation is rigid (preserves every real relative distance/angle from
+# IsaacGym's own numbers, just re-origins them), not a rescale. The goal
+# orientation is IsaacGym's own quat ([0,0,1,0] xyzw), a 180-degree flip
+# about z from the block's spawn orientation (theta=0, matching
+# `t_shape_footprint()`'s own implicit zero), hence `jnp.pi` below.
+GYM2_GOAL = jnp.array([0.2, 0.75, jnp.pi])
 GYM2_OBSTACLES = ObstacleField(
-    [Box(center=[0.9, 0.05], half_extents=[0.05, 0.05], angle=0.0)]
+    [Box(center=[0.2, 0.5], half_extents=[0.05, 0.05], angle=0.0)]
 )
 GYM2_FOOTPRINT_KW = dict(
     crossbar_half=(0.100, 0.025), stem_half=(0.025, 0.050),
@@ -64,10 +70,11 @@ GYM2_FOOTPRINT_KW = dict(
 
 # gym2's own xArm6 mount -- distinct from XARM6_BASE_POS/YAW above, since
 # gym2's block/goal/obstacle sit in a different part of the workspace.
-# Also a literal copy of sim_task02.yaml's `initial_actor_positions`
-# (identical across every sim_taskNN.yaml) -- IsaacGym itself never rotates
-# the base (no init_ori on xarm6_stick.yaml), so yaw is 0 here too.
-GYM2_XARM6_BASE_POS = (0.4, 0.0)
+# IsaacGym's own (0.4, 0), translated by the same (-0.7, +0.45) as
+# everything else above (a rigid shift doesn't change yaw, so that's still
+# 0 -- IsaacGym never rotates its base either, no init_ori on
+# xarm6_stick.yaml).
+GYM2_XARM6_BASE_POS = (-0.3, 0.45)
 GYM2_XARM6_BASE_YAW_DEG = 0.0
 
 
