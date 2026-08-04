@@ -1,0 +1,11 @@
+<mujoco model="xarm6_pusht_open_table">
+  <!-- Push the T across an empty table. No obstacles at all -- the
+       unobstructed baseline the other scenes add clutter to. Arm, table,
+       block, goal and camera come from common.xml + tee.xml unchanged,
+       which is exactly the relationship sim_task01.yaml has to
+       sim_task02..04 in the source repo.
+
+       IsaacGym conf/task/sim_task01.yaml. -->
+  <include file="common.xml"/>
+  <include file="tee.xml"/>
+</mujoco>

@@ -23,8 +23,15 @@ sweep:
   # for 3D, `world`/`env` for 2D.
   task:
     # - { world: 3d, robot: point }
-    - { world: 3d, robot: xarm6 }
-    # - { world: 3d, robot: xarm6, scene: gym2 }   # IsaacGym conversion
+    # - { world: 3d, robot: xarm6 }
+    # The five tabletop scenes. Uncomment to sweep them; each is its own
+    # `task` entry, so each gets its own run identity and its own row in
+    # `oim/run_eval.py`'s table.
+    - { world: 3d, robot: xarm6, scene: open_table }
+    - { world: 3d, robot: xarm6, scene: single_obstacle }
+    - { world: 3d, robot: xarm6, scene: shelf_gap }
+    - { world: 3d, robot: xarm6, scene: ycb_clutter }
+    - { world: 3d, robot: xarm6, scene: icra_sign }
     # - { world: 2d, env: clutter }
     # - { world: 2d, env: corridor }
     # - { world: 2d, env: gate }
@@ -37,7 +44,7 @@ sweep:
   robot_opt: [mppi]
   object_opt: [mppi]
 
-  horizon: [16,32]
+  horizon: [16]
   samples: []
   n_admm: []
   seed: []

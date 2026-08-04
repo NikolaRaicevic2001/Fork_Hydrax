@@ -2,24 +2,29 @@ r"""Compute metrics over saved runs -- without re-running any experiment.
 
 `examples/pusht.py` produces one run file per run; `oim/run_launch.py`
 produces many. This reads them, derives every metric on the fly via
-`oim.utils.metrics`, groups the runs into comparable cells, and emits the
-table that goes in the paper.
+`oim.utils.metrics`, and emits the paper's table: one block per task, one
+row per method inside it, and a final `Mean` block averaging each method
+over the tasks.
 
-    # every run under oim/results/runs, grouped automatically
+    # every run under oim/results/runs
     uv run python -m oim.run_eval
 
-    # one sweep, grouped explicitly, as a LaTeX-ready markdown table
-    uv run python -m oim.run_eval --runs-dir oim/results/runs \\
-        --group-by task algorithm horizon --format markdown
+    # the five tabletop tasks, ADMM against flat MPPI, as LaTeX
+    uv run python -m oim.run_eval --format latex \
+        --filter task=pusht3d_xarm6_open_table,pusht3d_xarm6_shelf_gap \
+        --filter algorithm=admm,mppi
 
-    # summarise a chosen set of tasks / algorithms / horizons
-    uv run python -m oim.run_eval \
-        --filter task=pusht3d_xarm6,pusht3d_point \
-        --filter algorithm=admm,mppi --filter horizon=5,15,25 \
-        --group-by task algorithm horizon
+    # ablate a swept setting: one block per (task, horizon) instead
+    uv run python -m oim.run_eval --group-by task horizon
 
     # re-score old runs against a stricter success tolerance
     uv run python -m oim.run_eval --pos-tol 0.02 --theta-tol 0.02
+
+Everything not grouped on is *averaged into* the cell, never split across
+rows: a sweep over horizons, sample counts and seeds still yields one
+number per (task, method). Whatever varied is printed above the table, so a
+mixed cell is never silently reported as a clean one; `--filter` pins a
+value and `--group-by` splits on it instead.
 
 Nothing here touches the simulator, JAX or MuJoCo: changing a metric, a
 tolerance, or how results are grouped costs a second, not a GPU-week. That
@@ -37,49 +42,62 @@ from oim import ROOT
 from oim.utils.metrics import aggregate_metrics, trial_metrics
 from oim.utils.results import RunName, load_run
 
-# Group keys always used, if present, before any auto-detected ones. `seed`
-# is deliberately absent: seeds are the *trials within* a cell, not a cell.
-_BASE_KEYS = ("world", "task", "algorithm", "robot_opt", "object_opt")
+# Label of the block that averages each method over the row groups.
+MEAN_LABEL = "Mean"
 
-# Columns of the emitted table, as (header, metric key, format).
+# Recorded fields that `method` is built from, so they name a row rather
+# than being averaged into one.
+_METHOD_FIELDS = frozenset(
+    {"method", "algorithm", "robot_opt", "object_opt"}
+)
+
+# Most distinct values of a field to name in the "averaged over" line
+# before summarising the rest as a count.
+_MAX_LISTED_VALUES = 6
+
+# Columns of the emitted table, as (header, metric key, format). Matches
+# the paper's simulation table, plus the trial count and the orientation
+# error the paper omits. Standard deviations are in the JSON, not here.
 _COLUMNS: Tuple[Tuple[str, str, str], ...] = (
     ("n", "n_trials", "d"),
     ("SR", "success_rate", ".2f"),
-    ("eps_d", "pos_err_mean", ".4f"),
-    ("+/-", "pos_err_std", ".4f"),
-    ("eps_d^s", "pos_err_mean_success", ".4f"),
-    ("theta", "theta_err_mean", ".4f"),
-    ("+/-", "theta_err_std", ".4f"),
-    ("T", "mean_execution_time", ".2f"),
+    ("eps_d", "pos_err_mean", ".3f"),
+    ("eps_d^s", "pos_err_mean_success", ".3f"),
+    ("theta", "theta_err_mean", ".3f"),
     ("f (Hz)", "mean_frequency_hz", ".2f"),
+    ("T (s)", "mean_execution_time", ".2f"),
 )
+
+_LATEX_HEADERS = {
+    "n": r"$n$",
+    "SR": r"SR $\uparrow$",
+    "eps_d": r"$\epsilon_d$ $\downarrow$",
+    "eps_d^s": r"$\epsilon_d^s$ $\downarrow$",
+    "theta": r"$\epsilon_\theta$ $\downarrow$",
+    "f (Hz)": r"$\bar{f}$ $\uparrow$",
+    "T (s)": r"$T$ $\downarrow$",
+}
 
 
 def _run_fields(run: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten a run's identity and settings into one lookup table."""
+    """Flatten a run's identity and settings into one lookup table.
+
+    Adds a derived `method` field -- the algorithm plus, for ADMM, its two
+    block optimizers -- since that is what a table column compares and no
+    single recorded field carries it.
+    """
     fields = dict(run.get("run", {}))
     fields.update(run.get("hyperparameters", {}))
+    algorithm = fields.get("algorithm")
+    robot_opt, object_opt = fields.get("robot_opt"), fields.get("object_opt")
+    # Only a consensus algorithm has two blocks; a flat baseline records
+    # `object_opt: None` and is named by its algorithm alone.
+    fields["method"] = (
+        f"{algorithm}({robot_opt}/{object_opt})"
+        if object_opt
+        else str(algorithm)
+    )
     return fields
-
-
-def _auto_group_keys(runs: List[Dict[str, Any]]) -> List[str]:
-    """Group by identity, plus any setting that actually varies.
-
-    A sweep over horizon should become a horizon column without being
-    asked; a setting held fixed across every run should not, since a column
-    of one repeated value is noise. `seed` is excluded because varying it
-    is what makes trials rather than cells.
-    """
-    fields = [_run_fields(r) for r in runs]
-    keys = [k for k in _BASE_KEYS if any(k in f for f in fields)]
-    varying = set()
-    for key in {k for f in fields for k in f}:
-        if key in keys or key == "seed":
-            continue
-        seen = {json.dumps(f.get(key), sort_keys=True) for f in fields}
-        if len(seen) > 1:
-            varying.add(key)
-    return keys + sorted(varying)
 
 
 def parse_filters(items: Sequence[str]) -> Dict[str, Set[str]]:
@@ -119,88 +137,282 @@ def _matches(run: Dict[str, Any], filters: Dict[str, Set[str]]) -> bool:
     return all(str(fields.get(k)) in values for k, values in filters.items())
 
 
-def evaluate(
-    runs: List[Dict[str, Any]],
-    group_by: Sequence[str],
-    shared_max_time: bool = True,
-) -> Dict[str, Dict[str, Any]]:
-    """Aggregate loaded runs into one metric set per group.
+def averaged_fields(
+    runs: List[Dict[str, Any]], group_by: Sequence[str]
+) -> Dict[str, List[str]]:
+    """Settings that vary across `runs` but are not grouped on.
+
+    Every one of these is averaged into the cells rather than splitting
+    them, which is the point of the table -- but it also means a cell can
+    silently mix, say, two horizons. Reporting them alongside the table is
+    what keeps that honest.
+
+    `algorithm`/`robot_opt`/`object_opt` are excluded: they vary across any
+    real comparison, but they are not averaged over -- they are exactly
+    what `method` splits the rows by.
 
     Args:
         runs: Payloads from `oim.utils.results.load_run`.
-        group_by: Field names forming each group's key.
-        shared_max_time: Credit unsuccessful trials the slowest execution
-            time *across the whole sweep* rather than within their own
-            group. Keeps the T column comparable between methods: scored
-            per group, a method that fails quickly and consistently would
-            be credited its own short worst case and beat one that nearly
-            succeeds.
+        group_by: The fields forming the row groups.
 
     Returns:
-        `{group_label: aggregate_metrics(...)}`, ordered by label.
+        `{field: sorted distinct values}`, for the fields that vary.
     """
-    grouped: Dict[Tuple, List[Dict[str, Any]]] = defaultdict(list)
+    fields = [_run_fields(r) for r in runs]
+    fixed = set(group_by) | _METHOD_FIELDS
+    out: Dict[str, List[str]] = {}
+    for key in {k for f in fields for k in f}:
+        if key in fixed:
+            continue
+        seen = sorted({str(f.get(key)) for f in fields})
+        if len(seen) > 1:
+            out[key] = seen
+    return out
+
+
+def _mean_over_groups(cells: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Average one method's per-group metrics into its `Mean` row.
+
+    Unweighted: every row group counts once, whatever its trial count, so a
+    task that happened to get more seeds does not dominate. `n_trials` is
+    summed instead (it is a count, not a score), and `n_groups` records how
+    many rows went in. A metric that is undefined in some groups -- e.g.
+    `pos_err_mean_success` where nothing succeeded -- averages over the
+    groups where it is defined, and stays `None` if that is none of them.
+
+    Args:
+        cells: `aggregate_metrics` output, one per row group.
+
+    Returns:
+        One aggregate in the same shape, plus `n_groups`.
+    """
+    out: Dict[str, Any] = {"n_groups": len(cells)}
+    for key in {k for c in cells for k in c}:
+        values = [c[key] for c in cells if c.get(key) is not None]
+        if not values:
+            out[key] = None
+        elif key == "n_trials":
+            out[key] = sum(values)
+        else:
+            out[key] = sum(values) / len(values)
+    return out
+
+
+def evaluate(
+    runs: List[Dict[str, Any]],
+    group_by: Sequence[str] = ("task",),
+    shared_max_time: bool = True,
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Aggregate runs into one cell per (row group, method), plus `Mean`.
+
+    Args:
+        runs: Payloads from `oim.utils.results.load_run`.
+        group_by: Fields forming each row group -- the table's left column.
+            Default `("task",)`. `method` is always the inner dimension and
+            need not be listed. Any field not named here is averaged into
+            the cells; see `averaged_fields`.
+        shared_max_time: Credit unsuccessful trials the slowest execution
+            time *across every loaded run* rather than within their own
+            cell. Keeps the T column comparable between methods: scored per
+            cell, a method that fails quickly and consistently would be
+            credited its own short worst case and beat one that nearly
+            succeeded.
+
+    Returns:
+        `{row label: {method: metrics}}`, row groups sorted, with
+        `MEAN_LABEL` last.
+
+    Raises:
+        ValueError: If `runs` is empty.
+    """
+    if not runs:
+        raise ValueError("evaluate needs at least one run")
+
+    trials: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for run in runs:
         fields = _run_fields(run)
-        grouped[tuple(fields.get(k) for k in group_by)].append(
-            trial_metrics(run)
-        )
+        row = "/".join(str(fields.get(k)) for k in group_by)
+        trials[(row, fields["method"])].append(trial_metrics(run))
 
     max_time = None
     if shared_max_time:
         max_time = max(
-            t["execution_time"] for ts in grouped.values() for t in ts
+            t["execution_time"] for ts in trials.values() for t in ts
         )
 
-    return {
-        "/".join(str(v) for v in key): aggregate_metrics(
-            trials, max_time=max_time
-        )
-        for key, trials in sorted(grouped.items(), key=lambda kv: str(kv[0]))
-    }
+    table: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for (row, method), ts in trials.items():
+        table[row][method] = aggregate_metrics(ts, max_time=max_time)
+
+    out = {row: dict(sorted(table[row].items())) for row in sorted(table)}
+
+    # The Mean block: each method averaged over the row groups it appears
+    # in. Omitted for a single row group, where it would just repeat it.
+    if len(out) > 1:
+        by_method: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for methods in out.values():
+            for method, metrics in methods.items():
+                by_method[method].append(metrics)
+        out[MEAN_LABEL] = {
+            method: _mean_over_groups(cells)
+            for method, cells in sorted(by_method.items())
+        }
+    return out
+
+
+def _strip_common_prefix(labels: Sequence[str]) -> Tuple[List[str], str]:
+    """Drop the `_`-delimited prefix every label shares.
+
+    Task labels are built as `{world}_{robot}_{scene}`, so a table of five
+    scenes repeats `pusht3d_xarm6_` in every row and the column that
+    actually distinguishes them gets pushed off to the right. The stripped
+    prefix is returned so it can be stated once above the table instead.
+
+    Args:
+        labels: The row labels.
+
+    Returns:
+        The shortened labels and the removed prefix (`""` if none).
+    """
+    parts = [label.split("_") for label in labels]
+    if len(parts) < 2:
+        return list(labels), ""
+    common = 0
+    while (
+        all(len(p) > common + 1 for p in parts)
+        and len({p[common] for p in parts}) == 1
+    ):
+        common += 1
+    if not common:
+        return list(labels), ""
+    return (
+        ["_".join(p[common:]) for p in parts],
+        "_".join(parts[0][:common]) + "_",
+    )
+
+
+def _rows(
+    summary: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Tuple[List[Tuple[str, str, List[str]]], str]:
+    r"""Flatten the summary into (row label, method, formatted cells).
+
+    The row label is blank on all but the first method of each block, the
+    way the paper's `\multirow` renders it.
+    """
+    groups = [g for g in summary if g != MEAN_LABEL]
+    short, prefix = _strip_common_prefix(groups)
+    labels = dict(zip(groups, short, strict=True))
+    labels[MEAN_LABEL] = MEAN_LABEL
+
+    rows = []
+    for group, methods in summary.items():
+        for i, (method, metrics) in enumerate(methods.items()):
+            cells = []
+            for _, key, fmt in _COLUMNS:
+                value = metrics.get(key)
+                cells.append("-" if value is None else format(value, fmt))
+            rows.append((labels[group] if i == 0 else "", method, cells))
+    return rows, prefix
 
 
 def format_table(
-    summary: Dict[str, Dict[str, Any]],
-    group_by: Sequence[str],
-    markdown: bool = False,
+    summary: Dict[str, Dict[str, Dict[str, Any]]],
+    group_by: Sequence[str] = ("task",),
+    style: str = "text",
 ) -> str:
-    """Render the summary as a fixed-width or markdown table.
+    """Render the summary as text, markdown or a LaTeX tabular.
 
     Args:
         summary: `evaluate` output.
-        group_by: The field names its labels were built from.
-        markdown: Emit a markdown table instead of aligned plain text.
+        group_by: The fields its row labels were built from, for the header.
+        style: `"text"`, `"markdown"` or `"latex"`.
 
     Returns:
         The rendered table.
+
+    Raises:
+        ValueError: If `style` is unknown.
     """
-    headers = ["/".join(group_by)] + [c[0] for c in _COLUMNS]
-    rows = []
-    for label, m in summary.items():
-        row = [label]
-        for _, key, fmt in _COLUMNS:
-            value = m.get(key)
-            row.append("-" if value is None else format(value, fmt))
-        rows.append(row)
+    rows, prefix = _rows(summary)
+    group_header = "/".join(group_by)
+    headers = [group_header, "method"] + [c[0] for c in _COLUMNS]
+    note = f"({group_header} prefix '{prefix}' omitted)\n\n" if prefix else ""
 
-    if markdown:
-        out = ["| " + " | ".join(headers) + " |"]
-        out.append("| " + " | ".join("---" for _ in headers) + " |")
-        out += ["| " + " | ".join(r) + " |" for r in rows]
-        return "\n".join(out)
+    if style == "markdown":
+        body = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        body += [
+            "| " + " | ".join([g, m, *cells]) + " |" for g, m, cells in rows
+        ]
+        return note + "\n".join(body)
 
+    if style == "latex":
+        return note + _latex_table(summary, group_header)
+
+    if style != "text":
+        raise ValueError(f"unknown table style {style!r}")
+
+    table = [[g, m, *cells] for g, m, cells in rows]
     widths = [
-        max(len(headers[i]), *(len(r[i]) for r in rows))
+        max(len(headers[i]), *(len(r[i]) for r in table))
         for i in range(len(headers))
     ]
 
-    def _row(cells: Sequence[str]) -> str:
+    def _line(cells: Sequence[str]) -> str:
         pairs = zip(cells, widths, strict=True)
         return "  ".join(c.ljust(w) for c, w in pairs)
 
-    line = _row(headers)
-    return "\n".join([line, "-" * len(line)] + [_row(r) for r in rows])
+    head = _line(headers)
+    out = [head, "-" * len(head)]
+    for i, row in enumerate(table):
+        # A rule before each new block, so the eye can find them.
+        if i and row[0]:
+            out.append("-" * len(head))
+        out.append(_line(row))
+    return note + "\n".join(out)
+
+
+def _latex_table(
+    summary: Dict[str, Dict[str, Dict[str, Any]]], group_header: str
+) -> str:
+    r"""A `tabular` body using `\multirow` for the row-group column."""
+    rows, _ = _rows(summary)
+    header = " & ".join(
+        [group_header, "Method"] + [_LATEX_HEADERS[c[0]] for c in _COLUMNS]
+    )
+    # How many method rows each block spans, for \multirow.
+    spans = [len(methods) for methods in summary.values()]
+
+    out = [
+        r"\begin{tabular}{@{}ll" + "c" * len(_COLUMNS) + r"@{}}",
+        r"    \toprule",
+        f"    {header} \\\\",
+        r"    \midrule",
+    ]
+    block = -1
+    for group, method, cells in rows:
+        if group:
+            block += 1
+            if block:
+                # \midrule\midrule sets the Mean block apart, as the paper
+                # does; a single rule between the task blocks.
+                out.append(
+                    r"    \midrule\midrule"
+                    if group == MEAN_LABEL
+                    else r"    \midrule"
+                )
+            label = rf"\multirow{{{spans[block]}}}{{*}}{{{group}}}"
+        else:
+            label = ""
+        escaped = [c.replace("_", r"\_") for c in [label, method]]
+        # "--" rather than the plain-text "-": that is how the paper marks
+        # a metric with no defined value, and a lone hyphen sets as one.
+        shown = ["--" if c == "-" else c for c in cells]
+        out.append("    " + " & ".join(escaped + shown) + r" \\")
+    out += [r"    \bottomrule", r"\end{tabular}"]
+    return "\n".join(out)
 
 
 def load_runs(
@@ -225,6 +437,7 @@ def load_runs(
 
     Raises:
         FileNotFoundError: If no run files match.
+        ValueError: If a filter names a field no run records.
     """
     paths = sorted(glob.glob(os.path.join(runs_dir, "*.json")))
     loaded = [load_run(p) for p in paths]
@@ -254,6 +467,27 @@ def load_runs(
     return runs
 
 
+def _describe(averaged: Dict[str, List[str]]) -> str:
+    """One line naming what got averaged into every cell.
+
+    Long value lists are summarised by count -- a sweep over 20 seeds says
+    so rather than printing all 20 and burying the fields that matter.
+
+    Args:
+        averaged: `averaged_fields` output.
+
+    Returns:
+        A comma-separated summary.
+    """
+    parts = []
+    for key, values in sorted(averaged.items()):
+        if len(values) > _MAX_LISTED_VALUES:
+            parts.append(f"{key} ({len(values)} values)")
+        else:
+            parts.append(f"{key} ({', '.join(values)})")
+    return ", ".join(parts)
+
+
 def main() -> None:
     """Parse arguments, aggregate the runs, print and save the table."""
     p = argparse.ArgumentParser(description=__doc__)
@@ -265,9 +499,9 @@ def main() -> None:
     p.add_argument(
         "--group-by",
         nargs="+",
-        default=None,
-        help="Fields forming each table row. Default: identity fields plus "
-        "any hyperparameter that varies across the loaded runs.",
+        default=["task"],
+        help="Fields forming each row block (default: task). Methods are "
+        "always the rows within a block; everything else is averaged in.",
     )
     p.add_argument(
         "--filter",
@@ -282,9 +516,9 @@ def main() -> None:
     p.add_argument("--theta-tol", type=float, help="Re-score success.")
     p.add_argument(
         "--format",
-        choices=["text", "markdown"],
+        choices=["text", "markdown", "latex"],
         default="text",
-        help="Table style for stdout and the saved .md/.txt.",
+        help="Table style for stdout and the saved file.",
     )
     p.add_argument(
         "--out-dir",
@@ -299,11 +533,16 @@ def main() -> None:
         runs = load_runs(args.runs_dir, filters, args.pos_tol, args.theta_tol)
     except (ValueError, FileNotFoundError) as e:
         p.error(str(e))
-    group_by = args.group_by or _auto_group_keys(runs)
-    summary = evaluate(runs, group_by)
 
-    table = format_table(summary, group_by, markdown=args.format == "markdown")
-    print(f"\n{len(runs)} runs, grouped by {group_by}\n")
+    summary = evaluate(runs, args.group_by)
+    table = format_table(summary, args.group_by, style=args.format)
+
+    n_rows = len([g for g in summary if g != MEAN_LABEL])
+    print(f"\n{len(runs)} runs -> {n_rows} {'/'.join(args.group_by)} groups")
+    averaged = averaged_fields(runs, args.group_by)
+    if averaged:
+        print(f"averaged over: {_describe(averaged)}")
+    print()
     print(table)
 
     if args.no_save:
@@ -316,8 +555,9 @@ def main() -> None:
             {
                 "runs_dir": args.runs_dir,
                 "n_runs": len(runs),
-                "filters": filters,
-                "group_by": list(group_by),
+                "filters": {k: sorted(v) for k, v in filters.items()},
+                "group_by": list(args.group_by),
+                "averaged_over": averaged,
                 "goal_pos_tol": args.pos_tol,
                 "goal_theta_tol": args.theta_tol,
                 "results": summary,
@@ -325,7 +565,7 @@ def main() -> None:
             f,
             indent=2,
         )
-    ext = "md" if args.format == "markdown" else "txt"
+    ext = {"markdown": "md", "latex": "tex", "text": "txt"}[args.format]
     table_path = os.path.join(args.out_dir, f"{name()}.{ext}")
     with open(table_path, "w") as f:
         f.write(table + "\n")

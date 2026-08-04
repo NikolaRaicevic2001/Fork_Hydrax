@@ -12,11 +12,11 @@
 # flag happened to be set to.
 #
 # One file per robot, not per scene: `--scene` picks the 3D layout
-# (`clutter`, `gym2`) and every scene is run under the same numbers, so a
-# scene comparison is not confounded by tuning. Separate from `point.yaml`
-# precisely so tuning the arm cannot silently retune the point mass -- the
-# arm's per-rollout collision cost is far higher, so its sampler budget and
-# step count do not transfer.
+# (`clutter`, or one of the five tabletop scenes) and every scene is run
+# under the same numbers, so a scene comparison is not confounded by
+# tuning. Separate from `point.yaml` precisely so tuning the arm cannot
+# silently retune the point mass -- the arm's per-rollout collision cost is
+# far higher, so its sampler budget and step count do not transfer.
 #
 # `world2d` is unused for this robot (2D has one disc robot) but kept for
 # schema parity, so the loader needs no per-robot special cases.

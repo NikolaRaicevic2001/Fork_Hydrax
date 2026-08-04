@@ -1,0 +1,17 @@
+<mujoco model="xarm6_pusht_single_obstacle">
+  <!-- Push the T past one cube -- open_table plus the single static
+       "block" actor, sitting between the T's start and its goal.
+
+       IsaacGym conf/task/sim_task02.yaml. -->
+  <include file="common.xml"/>
+  <include file="tee.xml"/>
+
+  <worldbody>
+    <!-- conf/actors/block.yaml: box, full size 0.1 x 0.1 x 0.1 m, init_pos
+         [0.9, 0.05, 0.195] -> half-extents 0.05 and, after the (-0.7,+0.45)
+         shift and resting on the tabletop, (0.2, 0.5, 0.05). A full 0.1 m
+         cube, i.e. twice the T-block's own height: the stick can hit it,
+         which is the point of the task. -->
+    <geom class="tabletop_obstacle" name="obs_box" type="box" size="0.05 0.05 0.05" pos="0.2 0.5 0.05"/>
+  </worldbody>
+</mujoco>

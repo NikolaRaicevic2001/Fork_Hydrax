@@ -190,3 +190,55 @@ def t_shape_footprint(
             ]
         )
     )
+
+
+def c_shape_footprint(
+    half_width: float = 0.0350,
+    half_height: float = 0.0515,
+    half_stroke: float = 0.010,
+) -> Polygon:
+    """Build the outline of a block capital-C from its stroke dimensions.
+
+    The C is a full-height spine down the left with a full-width bar at the
+    top and another at the bottom. This is the exact union outline of the
+    three boxes making up the `block` body in
+    `models/xarm6_pusht_tabletop/icra_sign.xml`, so the analytic footprint
+    and the simulated geometry agree there the same way `t_shape_footprint`
+    agrees with the T scenes.
+
+    Defaults match that MJCF: 0.070 x 0.103 m, the cap height and stroke of
+    the IsaacGym repo's own `assets/urdf/alphabets` glyphs. Those are
+    smoothly curved; this is a block-letter stand-in with the same bounding
+    box, stroke width and single concavity. See `icra_sign.xml` for why a
+    mesh is not used, and why the C rather than another letter.
+
+    Args:
+        half_width: Half the letter's overall width (x).
+        half_height: Half the letter's overall height (y).
+        half_stroke: Half the thickness of the spine and each bar.
+
+    Returns:
+        The C outline as a `Polygon`, wound counter-clockwise.
+    """
+    x, y, t = half_width, half_height, half_stroke
+    # Inner faces: where the two bars end, and the spine's right face.
+    top_bar_bot = y - 2.0 * t
+    bot_bar_top = -y + 2.0 * t
+    spine_inner = -x + 2.0 * t
+    return Polygon(
+        jnp.array(
+            [
+                [-x, -y],
+                [x, -y],
+                # Up the bottom bar's right end, then left along its top
+                # face as far as the spine.
+                [x, bot_bar_top],
+                [spine_inner, bot_bar_top],
+                # Up the spine's right face and out along the top bar.
+                [spine_inner, top_bar_bot],
+                [x, top_bar_bot],
+                [x, y],
+                [-x, y],
+            ]
+        )
+    )

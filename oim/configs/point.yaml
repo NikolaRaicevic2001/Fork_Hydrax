@@ -12,10 +12,12 @@
 # flag happened to be set to.
 #
 # One file per robot, not per scene: `--scene` picks the 3D layout
-# (`clutter`, `gym2`) and every scene is run under the same numbers, so a
-# scene comparison is not confounded by tuning. `--robot xarm6` selects
-# `xarm6.yaml` instead, which is a separate file precisely so tuning the arm
-# cannot silently retune the point mass.
+# (`clutter`, or one of the five tabletop scenes) and every scene is run
+# under the same numbers, so a scene comparison is not confounded by
+# tuning. `--robot xarm6` selects `xarm6.yaml` instead, a separate file
+# precisely so tuning the arm cannot silently retune the point mass. (The
+# tabletop scenes are xArm6-only, so they always read that file, never
+# this one.)
 
 world3d:
   planning_dt: 0.05 # sub-optimizer rollout timestep

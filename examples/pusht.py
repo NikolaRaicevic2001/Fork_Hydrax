@@ -78,9 +78,10 @@ SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
 
 # Joint config (degrees) putting the xArm6's stick tip near the clutter
 # scene's block start; found via
-# oim/models/xarm6_pusht_clutter/verify_reach.py. Fallback only -- a scene
-# with its own workspace (e.g. gym2) should define a "start" keyframe
-# instead (see `_xarm6_start_qpos`), not another entry here.
+# oim/models/xarm6_pusht_clutter/verify_reach.py. Fallback only, and used
+# by `clutter` alone -- a scene with its own workspace (the tabletop
+# family) defines a "start" keyframe instead (see `_xarm6_start_qpos`),
+# not another entry here.
 XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
 
 
@@ -130,9 +131,9 @@ def _named_camera(
 
     `None` means the default free camera framing the whole scene -- what
     every scene got before any of them defined their own. A scene with a
-    layout the default camera frames badly (e.g. gym2, viewed from the
-    side by default) defines its own fixed camera instead of a special
-    case here.
+    layout the default camera frames badly (the tabletop family, viewed
+    from the side by default) defines its own fixed camera instead of a
+    special case here.
     """
     if mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_CAMERA, name) >= 0:
         return name

@@ -1,0 +1,55 @@
+<mujoco model="xarm6_pusht_ycb_clutter">
+  <!-- Push the T through household clutter -- single_obstacle's cube plus
+       three YCB objects scattered around the workspace.
+
+       IsaacGym conf/task/sim_task04.yaml.
+
+       YCB MESHES ARE REPLACED BY THEIR BOUNDING BOXES. All four obstacles
+       here are `fixed: True` in the source repo, so only their footprint
+       matters, never their dynamics; and MJX collides meshes as convex
+       hulls, which for these three would be close to their bounding boxes
+       anyway while costing convex-convex mesh collision (slow, and the
+       XLA autotuner has failed outright on it in this repo). Boxes also
+       keep the simulated geometry and the planner's analytic obstacle
+       field (oim/utils/scenes.py) *exactly* equal, which is what the ADMM
+       object subproblem actually reasons about.
+
+       Each box below is the mesh's own axis-aligned bounding box, measured
+       from the asset the URDF points at, placed at that bbox's centre --
+       not at the link origin, since the YCB meshes are not centred on it. -->
+  <include file="common.xml"/>
+  <include file="tee.xml"/>
+
+  <worldbody>
+    <!-- conf/actors/block.yaml, identical to single_obstacle's. -->
+    <geom class="tabletop_obstacle" name="obs_box" type="box" size="0.05 0.05 0.05" pos="0.2 0.5 0.05"/>
+
+    <!-- conf/actors/spamCan.yaml -> ycb/spamCan/nontextured.ply.
+         Mesh bbox 0.1021 x 0.0601 x 0.0835 m, centred at (-0.0328,
+         -0.0266, 0.0386) in the link frame; link init_pos [0.6, 0.30,
+         0.145], unrotated. World bbox centre (0.5672, 0.2734) -> shifted
+         (-0.1328, 0.7234). Sits just short of the goal, off to one side. -->
+    <geom class="tabletop_obstacle" name="spam_can" type="box"
+      size="0.0511 0.0301 0.0418" pos="-0.1328 0.7234 0.0418"/>
+
+    <!-- conf/actors/dominoSugar.yaml. This one is genuinely a box in the
+         URDF (full size 0.06 x 0.095 x 0.175 m, centred on the link
+         origin), with init_ori [0, -0.707, 0, 0.707] (xyzw) = -90 degrees
+         about y, which lays it on its side: full extents become
+         0.175 x 0.095 x 0.06. Written pre-rotated and axis-aligned here,
+         which is the identical volume. init_pos [0.90, -0.20, 0.18] ->
+         (0.2, 0.25). Lies directly between the block's start and the
+         cube. -->
+    <geom class="tabletop_obstacle" name="domino_sugar" type="box"
+      size="0.0875 0.0475 0.0300" pos="0.2 0.25 0.0300"/>
+
+    <!-- conf/actors/mustardBottle.yaml -> ycb/mustardBottle/nontextured.stl.
+         Mesh bbox 0.0972 x 0.0666 x 0.1913 m, centred at (-0.0153,
+         -0.0235, 0.0925); link init_pos [1.20, 0.10, 0.145], unrotated.
+         World bbox centre (1.1847, 0.0765) -> shifted (0.4847, 0.5265).
+         The tallest obstacle in any of these scenes, and the only one
+         outside the arm's reach envelope. -->
+    <geom class="tabletop_obstacle" name="mustard_bottle" type="box"
+      size="0.0486 0.0333 0.0957" pos="0.4847 0.5265 0.0957"/>
+  </worldbody>
+</mujoco>

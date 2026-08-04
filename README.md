@@ -54,7 +54,7 @@ Any of these serves as either ADMM subproblem solver, or runs standalone.
 
 ## Running
 
-Push-T through clutter: drive an SE(2) goal past three static obstacles.
+Planar pushing: drive an object to an SE(2) goal past static obstacles.
 **Three programs, one per job**, so an expensive step never repeats for a
 cheap one:
 
@@ -62,7 +62,7 @@ cheap one:
 | --- | --- | --- | --- |
 | [`examples/pusht.py`](examples/pusht.py) | one experiment | `results/runs/*.json` | — |
 | [`oim/run_launch.py`](oim/run_launch.py) | a sweep, one subprocess per cell | `results/sweeps/*.json` | the sweep config |
-| [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md}` | run files |
+| [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md,tex}` | run files |
 
 ### Single runs
 
@@ -83,11 +83,11 @@ uv run python examples/pusht.py --world 2d --env gate \
 | `--config` | `oim/configs/{robot}.yaml` | Parameter file supplying every default below |
 | `--world {3d,2d}` | `3d` | `3d`: MJX contact, point or xArm6 robot, `admm`/`mppi`/`ps`. `2d`: analytic single-point contact, disc robot, `admm` only — same ADMM code, for separating algorithm bugs from simulator bugs |
 | `--samples`, `--horizon` | from config | Rollouts per block, consensus horizon $H$ |
-| `--robot {point,xarm6}` | `point` | *3D:* embodiment; `xarm6` implies clutter |
+| `--robot {point,xarm6}` | `point` | *3D:* embodiment. `xarm6` always loads an obstacle scene; the tabletop scenes are xArm6-only |
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
 | `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, since Warp allocates outside that pool and otherwise cannot build its CUDA graphs |
 | `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (below) |
-| `--scene {clutter,gym2}` | `clutter` | *3D:* MJCF layout. `gym2` is the single-obstacle IsaacGym conversion and needs `--robot xarm6`. Recorded in the run identity, so `run_eval` can group on it |
+| `--scene` | `clutter` | *3D:* MJCF layout ([below](#3d-scenes)). Recorded in the run identity, so `run_eval` groups on it |
 | `--contact-action` | off | *2D:* object block decides $[p, f_n, f_t]$, not the wrench ([below](#object-action-parameterization)) |
 | `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
 | ***after the algorithm*** | | |
@@ -104,6 +104,33 @@ uv run python examples/pusht.py --world 2d --env gate \
 | `clutter` | routing *around* obstacles | 41 mm |
 | `corridor` | pushing *through* a narrow horizontal channel | 15 mm |
 | `gate` | a vertical slot, then rotating to the goal | 5 mm |
+
+#### 3D scenes
+
+The five tabletop scenes are conversions of the IsaacGym repo's
+`sim_task01`–`05`, keeping its coordinates, object dimensions and obstacle
+placements. All use the xArm6; all but `icra_sign` push the same T to the
+same goal, differing only in what is in the way.
+
+| `--scene` | Object → goal | In the way |
+| --- | --- | --- |
+| `clutter` | T, 45° turn | disc, box, triangle (this repo's own layout) |
+| `open_table` | T, 180° flip | nothing — the unobstructed baseline |
+| `single_obstacle` | ” | one 0.1 m cube on the direct path |
+| `shelf_gap` | ” | two 0.2×0.25×0.2 m shelves; the gap is exactly as wide as the T is long |
+| `ycb_clutter` | ” | that cube plus spam can, sugar box, mustard bottle |
+| `icra_sign` | C, 90° turn | seven glyphs spelling *ICRA 2026*; the goal is the empty C slot |
+
+MJX collides meshes as convex hulls, so mesh obstacles are replaced by
+their measured bounding boxes (`ycb_clutter`'s YCB objects, `icra_sign`'s
+glyphs) and `icra_sign`'s pushed C is a three-box block letter.
+[`common.xml`](oim/models/xarm6_pusht_tabletop/common.xml) documents those
+and the two rigid re-origins (object start → the origin, tabletop → $z=0$).
+
+Every scene is written twice — MJCF for the simulator,
+[`oim/utils/scenes.py`](oim/utils/scenes.py) for the planner — and a
+disagreement does not crash, it just plans against a world that is not
+being simulated. `tests/test_scenes.py` checks the two against each other.
 
 | Output | When |
 | --- | --- |
@@ -123,6 +150,9 @@ sweep:
 fixed: { steps: 200, headless: true }
 ```
 
+Every combination runs as its own `examples/pusht.py` subprocess. Any axis
+may be any `pusht.py` flag; an empty list drops it.
+
 ```bash
 uv run python -m oim.run_launch                        # the whole product
 uv run python -m oim.run_launch --dry-run              # print, run nothing
@@ -130,46 +160,60 @@ uv run python -m oim.run_launch --only algorithm=admm  # narrow it
 uv run python -m oim.run_launch --warp --set steps=50  # override `fixed:`
 ```
 
-| | |
+| Flag | |
 | --- | --- |
-| Axes | `task`, `algorithm`, `robot_opt`, `object_opt`, `horizon`, `samples`, `n_admm`, `seed` — anything `examples/pusht.py` takes as a flag. An empty list drops the axis, leaving `pusht.py`'s own default |
-| `fixed:` | applied to every cell; override per sweep with `--set key=value` (`--warp` is shorthand for `--set warp=true`). Unknown keys are rejected before the first cell runs |
-| Order | outermost axis first: every algorithm, horizon and seed of task 1 finishes before task 2 starts |
-| Invalid cells | dropped: 2D has no flat baselines, and a flat baseline has no ADMM blocks to sweep |
-| Isolation | one subprocess per cell, so a crash or OOM costs one cell, not the sweep, and each run gets the whole GPU and a clean allocator |
-| GPU barrier | waits for the previous cell's memory to be released before starting the next, and reports free MiB per cell. `--min-free-mib N` additionally requires headroom (the xArm6 ADMM cell peaks near 12000) |
-| On failure | logged and skipped (`--stop-on-error` to abort instead) |
-| Manifest | `results/sweeps/sweep_*.json` — each cell's settings, exact command, exit status, duration |
+| `--dry-run` | print each cell's exact command, run none |
+| `--only KEY=A,B` | keep only matching cells; repeatable |
+| `--set KEY=VALUE` | override `fixed:` for this sweep; unknown keys rejected up front |
+| `--warp` | shorthand for `--set warp=true` |
+| `--min-free-mib N` | require N MiB free before each cell (xArm6 ADMM peaks near 12000) |
+| `--stop-on-error` | abort on the first failure instead of skipping it |
+
+Cells run outermost axis first, so task 1 finishes entirely before task 2.
+Invalid cells are dropped (2D has no flat baselines; a flat baseline has no
+ADMM blocks). Each cell waits for the previous one's GPU memory. Failures
+are logged and skipped. `results/sweeps/*.json` records every cell's
+command, status and duration.
 
 ### Evaluation
 
+One block per task, one row per method, then a `Mean` block averaging each
+method over the tasks — the paper's table. **Everything not grouped on is
+averaged into the cell**, so a sweep over horizons, sample counts and seeds
+still gives one number per (task, method); whatever varied is printed above
+the table.
+
 ```bash
-uv run python -m oim.run_eval                        # every run, auto-grouped
-
-# pick the tasks, algorithms and horizons to summarise, one row each
-uv run python -m oim.run_eval \
-    --filter task=pusht3d_point,pusht3d_xarm6 \
-    --filter algorithm=admm,mppi \
-    --filter horizon=5,15,25 \
-    --group-by task algorithm horizon --format markdown
-
-uv run python -m oim.run_eval --pos-tol 0.02         # re-score, no re-running
+uv run python -m oim.run_eval                          # every run
+uv run python -m oim.run_eval --format latex           # paper-ready tabular
+uv run python -m oim.run_eval --filter algorithm=admm,mppi
+uv run python -m oim.run_eval --group-by task horizon  # ablate a setting
+uv run python -m oim.run_eval --pos-tol 0.02           # re-score, no re-running
 ```
 
-| | |
+| Flag | |
 | --- | --- |
-| `--filter KEY=A,B` | keep runs whose field is one of these; repeatable. Values of one field are OR-ed, different fields AND-ed. Any field in the table below, or any recorded hyperparameter |
-| `--group-by` | one table row per distinct combination. Omitted: identity **plus any hyperparameter that varies**, so a horizon sweep grows a horizon column by itself |
-| seeds | always the trials *within* a row, never a row of their own |
+| `--filter KEY=A,B` | keep matching runs; repeatable. One field's values OR-ed, different fields AND-ed |
+| `--group-by` | fields forming each block (default `task`). Methods are always the rows inside |
+| `--pos-tol`, `--theta-tol` | re-score success against a new tolerance |
+| `--format` | `text` (default), `markdown`, `latex` |
 
 | Column | Paper | |
 | --- | --- | --- |
 | `SR` | SR | fraction reaching both tolerances, re-derived from the final pose |
-| `eps_d` ± | $\epsilon_d$ | position error, all trials |
-| `eps_d^s` | $\epsilon_d^s$ | position error, successful trials only |
-| `theta` ± | — | orientation error; not in the paper |
-| `T` | $T$ | *simulated* time (`steps_run × dt`), machine-independent; a failed trial is credited the slowest time in the **sweep**, so methods stay comparable |
+| `eps_d` | $\epsilon_d$ | position error, all trials |
+| `eps_d^s` | $\epsilon_d^s$ | position error, successful trials only; blank if none succeeded |
+| `theta` | — | orientation error; not in the paper |
 | `f (Hz)` | $\bar{f}$ | wall-clock planning rate, from the recorded `compute_time` |
+| `T (s)` | $T$ | *simulated* time (`steps_run × dt`), machine-independent; a failed trial is credited the slowest time across every loaded run, so methods stay comparable |
+
+`Mean` is **unweighted over blocks** — each task counts once whatever its
+trial count — and skips blocks where a metric is undefined. Seeds are
+always trials within a cell, never a row.
+
+`results/runs_smoke/` holds a full 5-task × 2-method grid of 25-step runs
+for exercising the table without a GPU (`--runs-dir`). They are not
+results — see its README.
 
 
 ## Method
@@ -386,7 +430,8 @@ oim/
 ├── configs/              point.yaml, xarm6.yaml (defaults per robot);
 │                         run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
-└── utils/                spline, video, results.py (run files), metrics.py
+└── utils/                scenes.py (the 3D scene registry), spline, video,
+                          results.py (run files), metrics.py
 ```
 
 One `ADMM.optimize(state, params)` call, top to bottom:
