@@ -64,15 +64,28 @@ def footprint_world(verts: np.ndarray, pose: np.ndarray) -> np.ndarray:
 
 
 def _diagnostics_panel(ax_r, log: Dict[str, Any]) -> None:  # noqa: ANN001
-    """Primal/dual residual, rho, and realized-wrench-norm traces."""
-    ax_r.plot(log["primal_residual"], label="primal residual")
-    ax_r.plot(log["dual_residual"], label="dual residual")
-    ax_r.plot(log["rho"], label="rho")
-    ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
+    """ADMM residual/rho/wrench traces, or a flat baseline's error trace.
+
+    A flat controller's log has no consensus quantities (`_init_log` with
+    `admm=False` never allocates `primal_residual`/`dual_residual`/`rho`/
+    `wrench`) -- plotting those unconditionally is what crashed every
+    flat-baseline headless run with `KeyError: 'primal_residual'`. Fall
+    back to what every run logs regardless of algorithm: position and
+    orientation error over time.
+    """
+    if "primal_residual" in log:
+        ax_r.plot(log["primal_residual"], label="primal residual")
+        ax_r.plot(log["dual_residual"], label="dual residual")
+        ax_r.plot(log["rho"], label="rho")
+        ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
+        ax_r.set_title("ADMM diagnostics")
+    else:
+        ax_r.plot(log["pos_err"], label="position error (m)")
+        ax_r.plot(log["theta_err"], label="orientation error (rad)")
+        ax_r.set_title("Convergence")
     ax_r.set_xlabel("control step")
     ax_r.legend()
     ax_r.grid(alpha=0.3)
-    ax_r.set_title("ADMM diagnostics")
 
 
 def _sweep_footprints(ax, verts: np.ndarray, poses, stride: int) -> None:  # noqa: ANN001
