@@ -130,7 +130,7 @@ def build_controller(args):
     return task, ctrl
 
 
-def build_mock_interface(task, control_rate, exact_twist=False):
+def build_mock_interface(task, control_rate, exact_twist=False, block_start=None):
     """A MuJoCo sim behind the hardware interface, for laptop testing.
 
     Each `send_velocity` applies the commanded velocity and advances the sim by
@@ -150,7 +150,9 @@ def build_mock_interface(task, control_rate, exact_twist=False):
     # Start pose: the scene's arm home config (from SCENES[...]["arm_start_deg"],
     # reachable + collision-free for that scene's base) and block start SE(2).
     mj_data.qpos[:5] = [math.radians(q) for q in task.arm_start_deg]
-    mj_data.qpos[5:8] = list(task.start)
+    # block_start overrides the scene's nominal block SE(2) -- e.g. rehearse
+    # tomorrow's run in the mock from the real block pose FoundationPose reports.
+    mj_data.qpos[5:8] = list(block_start if block_start is not None else task.start)
     sim_steps_per_send = max(1, round((1.0 / control_rate) / EXEC_TIMESTEP))
     return MujocoMockInterface(mj_model, mj_data, sim_steps_per_send,
                                emulate_pose_only=not exact_twist)
@@ -203,6 +205,11 @@ def main():
                         "over a socket instead of importing rclpy here")
     p.add_argument("--bridge-host", default="127.0.0.1")
     p.add_argument("--bridge-port", type=int, default=5599)
+    p.add_argument("--block-start", type=float, nargs=3, default=None,
+                   metavar=("X", "Y", "YAW"),
+                   help="mock only: override the block start SE(2) [x y yaw], "
+                        "e.g. the real block pose from FoundationPose, to "
+                        "rehearse a specific run in the mock before enabling motors")
     p.add_argument("--exact-twist", action="store_true",
                    help="mock only: feed the sim's true block qvel to the "
                         "planner (like run_3d_admm) instead of a pose finite "
@@ -224,7 +231,8 @@ def main():
     t = time.perf_counter()
     if args.mock:
         interface = build_mock_interface(task, args.control_rate,
-                                         exact_twist=args.exact_twist)
+                                         exact_twist=args.exact_twist,
+                                         block_start=args.block_start)
         real_time = False
     elif args.socket:
         # Two-process fallback: the ROS I/O (and --dry-run / --velocity-topic)
