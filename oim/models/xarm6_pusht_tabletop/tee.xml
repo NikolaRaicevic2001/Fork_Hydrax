@@ -1,10 +1,17 @@
 <mujoco model="xarm6_pusht_tabletop_tee">
-  <!-- The table, camera, T-block and goal shared by open_table,
-       single_obstacle, shelf_gap and ycb_clutter. Those four IsaacGym
-       tasks (sim_task01..04) differ *only* in their obstacle field: the
-       same tee_block starts at the same pose and is pushed to the same
-       goal in all four, so all of that lives here once and each scene file
-       adds only its own obstacles.
+  <!-- The table, T-block and goal shared by open_table, single_obstacle,
+       shelf_gap and ycb_clutter. Those four IsaacGym tasks (sim_task01..04)
+       differ *only* in their obstacle field: the same tee_block starts at
+       the same pose and is pushed to the same goal in all four, so all of
+       that lives here once and each scene file adds only its own
+       obstacles.
+
+       The camera is *not* included here: shelf_gap needs a steeper
+       elevation than the other three to see over its shelves (its own
+       comment has the derivation), so each scene now declares its own
+       `<camera name="front">`, even the three that keep the original
+       numbers verbatim -- one shared camera element can't have two
+       different elevations depending on which file includes it.
 
        Positions are IsaacGym's own, re-origined as described in
        common.xml: xy shifted by (-0.7, +0.45) so the block starts at
@@ -22,19 +29,6 @@
          its footprint (x in [-0.4, 1.0], y in [-0.8, 1.7]). -->
     <geom name="table" type="box" size="0.70 1.25 0.07" pos="0.3 0.45 -0.07"
       rgba="0.95 0.95 0.95 1"/>
-
-    <!-- Fixed recording camera, front-on: the arm reaches towards the
-         camera with block, obstacles and goal laid out across frame,
-         matching the IsaacGym repo's own reference screenshots
-         (docs/static/results/figures/sim_tasks.png). Equivalent to a free
-         camera at azimuth=180, elevation=-25, distance=1.7, lookat
-         (-0.05, 0.375, 0.15) -- these scenes' workspace centre --
-         converted to explicit pos/xyaxes, since MJCF <camera> has no
-         azimuth/elevation/distance/lookat form. 1.7 rather than a tighter
-         framing so shelf_gap's shelves and ycb_clutter's YCB objects stay
-         in shot at the same camera. -->
-    <camera name="front" pos="1.4907 0.3750 0.8684"
-      xyaxes="0.0000 1.0000 -0.0000 -0.4226 0.0000 0.9063"/>
 
     <!-- Mirrors the block's geoms exactly, at the goal pose, so an aligned
          block occupies precisely the marker's volume -- overlap is the

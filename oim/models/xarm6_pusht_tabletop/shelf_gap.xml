@@ -19,6 +19,22 @@
   <include file="tee.xml"/>
 
   <worldbody>
+    <!-- Own camera, steeper and translated a little from the other three
+         tabletop scenes': at the shared elevation=-25 the 0.2 m-tall
+         shelves below block the view of the gap and the pusher between
+         them, even though nothing falls outside the frame -- elevation
+         dropped to -60 fixes that. Same azimuth=180 as the shared camera
+         (an azimuth pan was tried instead and reverted -- rotating
+         changes the viewing angle, not just what's centred). Instead the
+         lookat/pos pair is translated +0.1 along the camera's own right
+         axis (world +y at azimuth=180) to bring the arm closer to frame
+         centre: lookat (-0.05, 0.475, 0.15) instead of the shared
+         (-0.05, 0.375, 0.15), same distance=1.7 -- converted to explicit
+         pos/xyaxes the same way (see tee.xml's former camera comment, now
+         moved here since it no longer applies to all four scenes). -->
+    <camera name="front" pos="0.8000 0.4750 1.6222"
+      xyaxes="0.0000 1.0000 0.0000 -0.8660 0.0000 0.5000"/>
+
     <geom class="tabletop_obstacle" name="shelf_1" type="box" size="0.10 0.125 0.10" pos="0.4 0.5 0.10"/>
     <geom class="tabletop_obstacle" name="shelf_2" type="box" size="0.10 0.125 0.10" pos="0.0 0.5 0.10"/>
   </worldbody>
