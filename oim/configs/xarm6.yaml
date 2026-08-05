@@ -86,3 +86,10 @@ run:
   # ADMM are never scored against different thresholds.
   goal_pos_tol: 0.05
   goal_theta_tol: 0.05
+  # ADMM only (`--show-samples`/`--show-optimal`): the trajectory overlay
+  # costs real time to compute and render, so both default off. Each is
+  # independent: samples alone shows the candidate cloud with no chosen
+  # path drawn, optimal alone shows just the chosen path, both together is
+  # the full picture.
+  show_samples: false
+  show_optimal: false

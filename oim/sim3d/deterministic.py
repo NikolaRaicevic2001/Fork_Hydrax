@@ -34,7 +34,8 @@ def run_interactive(  # noqa: PLR0912, PLR0915
     reference_fps: float = 30.0,
     record_video: bool = False,
     recording_prefix: str = "simulation",
-    show_plans: bool = False,
+    show_samples: bool = False,
+    show_optimal: bool = False,
 ) -> None:
     """Run an interactive simulation with the MPC controller.
 
@@ -66,19 +67,24 @@ def run_interactive(  # noqa: PLR0912, PLR0915
             timestamp. Defaults to "simulation" for callers that don't
             care; pass something identifying the task and method for a
             more informative filename.
-        show_plans: Overlay both ADMM blocks' predicted object trajectories
-            (see `oim.sim3d.plan_overlay`). Requires a controller exposing
-            `nominal_plans`, i.e. `ADMM`. Off by default: when off, nothing
-            here runs at all, so it cannot affect timing.
+        show_samples: Overlay each block's sampled candidate rollouts (see
+            `oim.sim3d.plan_overlay`). Requires a controller exposing
+            `nominal_plans`, i.e. `ADMM`.
+        show_optimal: Overlay each block's chosen trajectory. Independent
+            of `show_samples` -- either, both, or neither. Both off by
+            default: when both are off, nothing here runs at all, so it
+            cannot affect timing.
 
     Raises:
-        TypeError: If `show_plans` is set for a controller that cannot
-            produce plans.
+        TypeError: If `show_samples`/`show_optimal` is set for a
+            controller that cannot produce plans.
     """
+    show_plans = show_samples or show_optimal
     if show_plans and not hasattr(controller, "nominal_plans"):
         raise TypeError(
-            f"show_plans needs a controller with nominal_plans(); "
-            f"{type(controller).__name__} has none (only ADMM does)."
+            f"show_samples/show_optimal need a controller with "
+            f"nominal_plans(); {type(controller).__name__} has none "
+            f"(only ADMM does)."
         )
     # Report the planning horizon in seconds for debugging
     print(
@@ -229,16 +235,23 @@ def run_interactive(  # noqa: PLR0912, PLR0915
                             )
                             ii += 1
 
-            # Overlay the two blocks' predicted object trajectories
+            # Overlay each block's sampled and/or chosen trajectories (the
+            # robot samples from the same `rollouts` this step's
+            # `show_traces` block, if enabled, also reads).
             if overlay is not None:
-                object_plan, robot_plan = jit_plans(mjx_data, policy_params)
+                object_plan, _, robot_trace = jit_plans(mjx_data, policy_params)
+                object_samples = None
+                robot_samples = None
+                if show_samples:
+                    object_samples = np.asarray(policy_params.object_samples)
+                    robot_samples = np.asarray(rollouts.trace_sites)[:, :, 0, :]
                 overlay.draw(
                     viewer.user_scn,
-                    np.asarray(
-                        controller.task.object_state_from_robot(mjx_data)
-                    ),
                     np.asarray(object_plan),
-                    np.asarray(robot_plan),
+                    np.asarray(robot_trace),
+                    object_samples,
+                    robot_samples,
+                    show_optimal,
                     base=overlay_base,
                 )
 

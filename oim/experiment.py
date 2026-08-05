@@ -321,9 +321,18 @@ def build_parser(
             help="No viewer: run --steps steps and save a run file.",
         )
         admm.add_argument(
-            "--show-plans",
+            "--show-samples",
             action="store_true",
-            help="Overlay both ADMM blocks' predicted trajectories.",
+            default=run["show_samples"],
+            help="Overlay each block's sampled candidate rollouts "
+            "(green). Independent of --show-optimal.",
+        )
+        admm.add_argument(
+            "--show-optimal",
+            action="store_true",
+            default=run["show_optimal"],
+            help="Overlay each block's chosen trajectory (orange), drawn "
+            "the same way as a sample. Independent of --show-samples.",
         )
     return parser
 
@@ -390,9 +399,7 @@ def _mjx_static(
         sim_timestep=float(mj_model.opt.timestep),
         qpos_size=int(mj_model.nq),
         qvel_size=int(mj_model.nv),
-        block_qpos_adr=(
-            task.block_qpos_adr if robot == "xarm6" else [0, 1, 2]
-        ),
+        block_qpos_adr=(task.block_qpos_adr if robot == "xarm6" else [0, 1, 2]),
         block_dof_adr=task.block_dofs,
     )
 
@@ -457,7 +464,14 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             show_traces=False,
             record_video=args.record,
             recording_prefix=name.stem,
-            **({"show_plans": args.show_plans} if is_admm else {}),
+            **(
+                {
+                    "show_samples": args.show_samples,
+                    "show_optimal": args.show_optimal,
+                }
+                if is_admm
+                else {}
+            ),
         )
         return
 
@@ -478,7 +492,14 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
         record_dir=RECORDINGS_DIR if args.record else None,
         record_name=name(),
         camera=camera,
-        **({"show_plans": args.show_plans} if is_admm else {}),
+        **(
+            {
+                "show_samples": args.show_samples,
+                "show_optimal": args.show_optimal,
+            }
+            if is_admm
+            else {}
+        ),
     )
     _save(
         experiment,
@@ -586,9 +607,7 @@ def _run_2d(experiment: Experiment, args: argparse.Namespace) -> None:
             save_animation_2d(task, scenario, log, gif)
 
 
-def main(
-    experiment: Experiment, argv: Optional[Sequence[str]] = None
-) -> None:
+def main(experiment: Experiment, argv: Optional[Sequence[str]] = None) -> None:
     """Parse this script's CLI, then run, record and save one experiment.
 
     Args:

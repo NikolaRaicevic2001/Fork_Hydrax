@@ -79,8 +79,8 @@ so an expensive step never repeats for a cheap one:
 ### Single runs
 
 ```bash
-# 3D: 300 headless steps on the shelves, Warp rollouts, mp4 + consensus overlay
-uv run python examples/shelf_gap.py --warp --record admm --headless --steps 300 --show-plans
+# 3D: 300 headless steps on the shelves, Warp rollouts, mp4 + trajectory overlay
+uv run python examples/shelf_gap.py --warp --record admm --headless --steps 300 --show-samples --show-optimal
 
 # 3D: the point mass instead of the arm, flat MPPI baseline
 uv run python examples/clutter.py --robot point mppi --headless --steps 200
@@ -103,7 +103,8 @@ uv run python examples/pusht2d_gate.py --animate --no-jit admm --n-admm 12 --rho
 | `--n-admm`, `--rho`, `--gamma` | from config | *`admm`:* max iterations, penalty $\rho$, proximal weight $\gamma$ |
 | `--robot-opt`, `--object-opt` | `mppi` | *3D `admm`:* inner solver per block — `mppi`/`cem`/`ps`/`cbo` |
 | `--headless` | off | *3D:* no viewer; run `--steps` and save a run file |
-| `--show-plans` | off | *3D `admm`:* overlay both blocks' predicted object paths — **amber** what the object block intends ($x^{o*}$), **teal** what the robot block would produce. Their gap is the primal residual, made spatial. Costs 1.7% of a control step |
+| `--show-samples` | from config | *3D `admm`:* overlay each block's sampled candidate rollouts, in **light green** |
+| `--show-optimal` | from config | *3D `admm`:* overlay each block's chosen trajectory, in **bright orange**, drawn the same way as a sample — the only difference is color. Independent of `--show-samples`: either, both, or neither. Both default off, per `oim/configs/{robot}.yaml`'s `run.show_samples`/`run.show_optimal` |
 | *config only* | | No flag: $\epsilon_r$, $\epsilon_s$, noise annealing, per-method sampler parameters, execution timestep, goal tolerances, 2D physics |
 
 | Output | When |
@@ -385,7 +386,7 @@ oim/
 │   │                       baseline is built exactly like ADMM's
 │   ├── deterministic.py  run_interactive: viewer, replanning, recording
 │   ├── run.py            run_3d_admm / run_3d_plain: headless + logging
-│   ├── plan_overlay.py   both blocks' predicted paths, viewer and video
+│   ├── plan_overlay.py   each block's samples/chosen path, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
 ├── experiment.py         Experiment + main(): the CLI, closed loop,

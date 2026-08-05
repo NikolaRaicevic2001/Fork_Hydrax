@@ -125,24 +125,24 @@ class _OffscreenRecorder:
 
     def set_plans(
         self,
-        current_pose: np.ndarray,
         object_plan: np.ndarray,
-        robot_plan: np.ndarray,
+        robot_trace: np.ndarray,
+        object_samples: Optional[np.ndarray] = None,
+        robot_samples: Optional[np.ndarray] = None,
+        draw_chosen: bool = True,
     ) -> None:
         """Hold the plans to composite into subsequent frames.
 
         Called once per control step, while frames are captured once per
         physics step -- so the same plans are drawn across the substeps they
-        were computed for, which is exactly their period of validity. The
-        anchor pose is the one the plans were computed from, not the live
-        one, so the curves stay pinned to the state that produced them and
-        any drift away from the block over a step is real tracking error
-        rather than a drawing artifact.
+        were computed for, which is exactly their period of validity.
         """
         self._plans = (
-            np.asarray(current_pose),
             np.asarray(object_plan),
-            np.asarray(robot_plan),
+            np.asarray(robot_trace),
+            None if object_samples is None else np.asarray(object_samples),
+            None if robot_samples is None else np.asarray(robot_samples),
+            draw_chosen,
         )
 
     def capture(self, mj_data: mujoco.MjData) -> None:
@@ -182,7 +182,8 @@ def run_3d_admm(
     video_fps: float = 30.0,
     video_size: Tuple[int, int] = (720, 480),
     camera: Optional[Union[str, int]] = None,
-    show_plans: bool = False,
+    show_samples: bool = False,
+    show_optimal: bool = False,
 ) -> Dict[str, Any]:
     """Run the MJX closed loop under ADMM and return a log, headless.
 
@@ -205,12 +206,15 @@ def run_3d_admm(
         video_size: (width, height) of the video in pixels.
         camera: Model camera name or id to render from. None uses the
             default free camera, which frames the whole scene.
-        show_plans: Composite both ADMM blocks' predicted object
-            trajectories into the recorded frames, as the live viewer's
-            `show_plans` does. Also logs the two plans per step, so the
-            comparison survives into the states file and can be re-examined
-            without the video. Needs `record_dir` to be of any visual use,
-            but the logging happens either way.
+        show_samples: Composite each block's sampled candidate rollouts
+            into the recorded frames, as the live viewer's `show_samples`
+            does.
+        show_optimal: Composite each block's chosen trajectory. Independent
+            of `show_samples` -- either, both, or neither. Either one also
+            logs `object_plan`/`robot_plan` per step, so that comparison
+            survives into the states file and can be re-examined without
+            the video. Needs `record_dir` to be of any visual use, but the
+            logging happens either way.
 
     Returns:
         A dict with the block/pusher trajectories, per-step wrenches,
@@ -219,6 +223,7 @@ def run_3d_admm(
     Raises:
         ValueError: If `record_dir` is given without `record_name`.
     """
+    show_plans = show_samples or show_optimal
     overlay = PlanOverlay(horizon=ctrl.ctrl_steps) if show_plans else None
     recorder = None
     if record_dir is not None:
@@ -247,6 +252,8 @@ def run_3d_admm(
             verbose,
             recorder,
             show_plans,
+            show_samples,
+            show_optimal,
         )
     finally:
         if recorder is not None:
@@ -311,6 +318,8 @@ def _run(
     verbose: bool,
     recorder: Optional[_OffscreenRecorder],
     show_plans: bool,
+    show_samples: bool,
+    show_optimal: bool,
 ) -> Dict[str, Any]:
     """The closed loop itself; see `run_3d_admm` for the arguments."""
     replan_period = 1.0 / frequency
@@ -342,22 +351,36 @@ def _run(
             time=mj_data.time,
         )
         t0 = time.perf_counter()
-        params, _ = jit_optimize(mjx_data, params)
+        params, rollouts = jit_optimize(mjx_data, params)
         jax.block_until_ready(params)
         log["compute_time"].append(time.perf_counter() - t0)
 
-        # After optimize (the plans come from the params it just produced)
-        # and before the substep loop (the recorder draws them into every
-        # frame of the step they belong to).
+        # After optimize (the plans come from the params it just produced,
+        # and the samples from the rollouts that produced them) and before
+        # the substep loop (the recorder draws them into every frame of the
+        # step they belong to).
         if jit_plans is not None:
-            object_plan, robot_plan = jit_plans(mjx_data, params)
+            object_plan, robot_plan, robot_trace = jit_plans(mjx_data, params)
             object_plan = np.asarray(object_plan)
-            robot_plan = np.asarray(robot_plan)
-            plan_anchor = np.asarray(task.object_state_from_robot(mjx_data))
+            robot_trace = np.asarray(robot_trace)
             log["object_plan"].append(object_plan)
-            log["robot_plan"].append(robot_plan)
+            log["robot_plan"].append(np.asarray(robot_plan))
             if recorder is not None:
-                recorder.set_plans(plan_anchor, object_plan, robot_plan)
+                object_samples = None
+                robot_samples = None
+                if show_samples:
+                    object_samples = np.asarray(params.object_samples)
+                    # trace_sites: (num_samples, H+1, num_trace_sites, 3)
+                    # -- this task has exactly one trace site (the pusher
+                    # tip).
+                    robot_samples = np.asarray(rollouts.trace_sites)[:, :, 0, :]
+                recorder.set_plans(
+                    object_plan,
+                    robot_trace,
+                    object_samples,
+                    robot_samples,
+                    show_optimal,
+                )
 
         tq = (
             jnp.arange(sim_steps_per_replan) * mj_model.opt.timestep

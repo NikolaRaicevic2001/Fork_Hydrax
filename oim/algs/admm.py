@@ -272,7 +272,7 @@ class ObjectSubproblem:
         prev_knots: jax.Array,
         noise_scale: jax.Array,
         rng: jax.Array,
-    ) -> Tuple[Any, jax.Array, jax.Array]:
+    ) -> Tuple[Any, jax.Array, jax.Array, jax.Array]:
         """Run `optimizer.iterations` MPPI-style passes against a fixed target.
 
         Args:
@@ -289,12 +289,14 @@ class ObjectSubproblem:
 
         Returns:
             Updated params, the object's proposed decision W^o = params.mean
-            (in physical units), and its own nominal state reference under
-            those decisions.
+            (in physical units), its own nominal state reference under
+            those decisions, and the last iteration's sampled object
+            trajectories, (num_samples, H, object_state_dim), for
+            visualization.
         """
         opt = self.optimizer
 
-        def _scan_body(params: Any, rng_i: jax.Array) -> Tuple[Any, None]:
+        def _scan_body(params: Any, rng_i: jax.Array) -> Tuple[Any, jax.Array]:
             noise_rng, sample_rng = jax.random.split(rng_i)
             # The task may own the proposal distribution (e.g. contact points
             # that must stay on the object's boundary); otherwise the
@@ -361,17 +363,23 @@ class ObjectSubproblem:
             params = params.replace(
                 mean=self.task.project_object_action(params.mean)
             )
-            return params, None
+            return params, states
 
         rngs = jax.random.split(rng, opt.iterations)
-        params, _ = jax.lax.scan(_scan_body, params, rngs)
+        params, all_states = jax.lax.scan(_scan_body, params, rngs)
+        # The last iteration's sample population, for visualization -- the
+        # candidate object trajectories this block considered before
+        # settling on `params.mean`. Free: `states` is already computed for
+        # `object_running_cost` above, this just keeps the last iteration's
+        # instead of discarding it.
+        object_samples = all_states[-1]
 
         # A^o is read off the block's own decision variable (paper eq. 23),
         # which for a non-trivial action parameterization means rolling the
         # nominal actions out to recover the wrenches they imply.
         nominal = self.task.project_object_action(params.mean)
         ref_states, w_obj = self._rollout(obj_state0, nominal)
-        return params, w_obj, ref_states
+        return params, w_obj, ref_states, object_samples
 
     def nominal_plan(self, obj_state0: jax.Array, params: Any) -> jax.Array:
         """The object trajectory this block currently intends, x^o_1..x^o_H.
@@ -614,37 +622,49 @@ class RobotSubproblem:
         _, consensus_vals = jax.lax.scan(_scan_fn, state, controls)
         return consensus_vals
 
-    def nominal_plan(self, state: mjx.Data, params: Any) -> jax.Array:
-        """The object trajectory this block's nominal controls would produce.
+    def nominal_plan(
+        self, state: mjx.Data, params: Any
+    ) -> Tuple[jax.Array, jax.Array]:
+        """What this block's nominal controls would produce.
 
         The robot block's counterpart to `ObjectSubproblem.nominal_plan`,
         and the reason the pair is worth looking at: both are trajectories
         of the *same* object, so their disagreement is the consensus
-        residual made spatial rather than scalar.
+        residual made spatial rather than scalar. The trace-site output is
+        for visualizing the robot's *physical* path (e.g. the end-effector),
+        which is a different thing from what it does to the object.
 
         Unlike the object block's, this one costs a real rollout -- H steps
         of the simulator -- but only one, against the `num_samples` the
         block already ran, so it is a fraction of a percent of a control
-        step.
+        step. The trace sites are read off the same rollout, at no
+        additional cost.
 
         Args:
             state: The robot-side state to roll out from.
             params: The robot optimizer's policy parameters.
 
         Returns:
-            Object states of shape (H, object_state_dim).
+            `(obj_states, trace_sites)`: object states, shape
+            (H, object_state_dim), and the task's trace site position at
+            each step, shape (H, 3).
         """
         opt = self.optimizer
         tk = params.tk
         tq = jnp.linspace(tk[0], tk[-1], opt.ctrl_steps)
         controls = opt.interp_func(tq, tk, params.mean[None, ...])[0]
 
-        def _scan_fn(x: mjx.Data, u: jax.Array) -> Tuple[mjx.Data, jax.Array]:
+        def _scan_fn(
+            x: mjx.Data, u: jax.Array
+        ) -> Tuple[mjx.Data, Tuple[jax.Array, jax.Array]]:
             x = self.rollout.step(self.task.model, x, u)
-            return x, self.task.object_state_from_robot(x)
+            return x, (
+                self.task.object_state_from_robot(x),
+                self.task.get_trace_sites(x)[0],
+            )
 
-        _, obj_states = jax.lax.scan(_scan_fn, state, controls)
-        return obj_states
+        _, (obj_states, trace_sites) = jax.lax.scan(_scan_fn, state, controls)
+        return obj_states, trace_sites
 
 
 @dataclass
@@ -664,6 +684,10 @@ class ADMMParams:
             any control-flow logic (only `primal_residual` feeds the noise
             anneal and the adaptive-`rho` rule reads both from `_ADMMCarry`
             directly) -- carried here purely so callers can log/plot it.
+        object_samples: The object block's last iteration's sampled
+            trajectories, (num_samples, H, object_state_dim). Not used by
+            any control-flow logic either -- carried here purely so
+            callers can visualize it, the same way `primal_residual` is.
         rng: PRNG key for the ADMM-level exploration noise.
     """
 
@@ -675,6 +699,7 @@ class ADMMParams:
     rho: jax.Array
     primal_residual: jax.Array
     dual_residual: jax.Array
+    object_samples: jax.Array
     rng: jax.Array
 
     @property
@@ -701,6 +726,7 @@ class _ADMMCarry:
     rho: jax.Array
     primal_res: jax.Array
     dual_res: jax.Array
+    object_samples: jax.Array
     rng: jax.Array
 
 
@@ -854,6 +880,11 @@ class ADMM(SamplingBasedController):
             # (an actual inf would immediately turn every sampled knot nan).
             primal_residual=jnp.asarray(100.0, dtype=jnp.float32),
             dual_residual=jnp.asarray(100.0, dtype=jnp.float32),
+            # Placeholder: never read as input (only ever overwritten by
+            # `_admm_iteration`'s real computation), so its shape here
+            # doesn't need to match -- unlike the other fields above, which
+            # seed real ADMM math on the first call.
+            object_samples=jnp.zeros((1, 1, 1), dtype=jnp.float32),
             rng=jax.random.key(seed),
         )
 
@@ -887,15 +918,17 @@ class ADMM(SamplingBasedController):
         prev_object_knots = carry.object_params.mean
         prev_robot_knots = carry.robot_params.mean
 
-        object_params, w_obj, obj_ref = self.object_subproblem.optimize(
-            obj_state0,
-            carry.object_params,
-            carry.z,
-            carry.gamma_o,
-            carry.rho,
-            prev_object_knots,
-            noise_scale,
-            obj_rng,
+        object_params, w_obj, obj_ref, object_samples = (
+            self.object_subproblem.optimize(
+                obj_state0,
+                carry.object_params,
+                carry.z,
+                carry.gamma_o,
+                carry.rho,
+                prev_object_knots,
+                noise_scale,
+                obj_rng,
+            )
         )
         robot_params, rollouts = self.robot_subproblem.optimize(
             state,
@@ -953,6 +986,7 @@ class ADMM(SamplingBasedController):
             rho=rho,
             primal_res=primal_res,
             dual_res=dual_res,
+            object_samples=object_samples,
             rng=rng,
         )
         return new_carry, rollouts
@@ -996,6 +1030,10 @@ class ADMM(SamplingBasedController):
             rho=params.rho,
             primal_res=params.primal_residual,
             dual_res=jnp.asarray(jnp.inf, dtype=jnp.float32),
+            # Never read by `_admm_iteration` (only overwritten by it), so
+            # carrying forward whatever shape the previous control step
+            # left here is fine -- the first real call below replaces it.
+            object_samples=params.object_samples,
             rng=admm_rng,
         )
 
@@ -1029,13 +1067,14 @@ class ADMM(SamplingBasedController):
             rho=final_carry.rho,
             primal_residual=final_carry.primal_res,
             dual_residual=final_carry.dual_res,
+            object_samples=final_carry.object_samples,
             rng=final_carry.rng,
         )
         return new_params, final_rollouts
 
     def nominal_plans(
         self, state: mjx.Data, params: ADMMParams
-    ) -> Tuple[jax.Array, jax.Array]:
+    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """Both blocks' predicted object trajectories, for visualization.
 
         The consensus is an agreement about a *wrench*, which is hard to
@@ -1056,18 +1095,21 @@ class ADMM(SamplingBasedController):
             params: Policy parameters as returned by `optimize`.
 
         Returns:
-            `(object_plan, robot_plan)`, each (H, object_state_dim): what
-            the object block intends, and what the robot block's controls
-            would actually produce.
+            `(object_plan, robot_plan, robot_trace)`: what the object block
+            intends and what the robot block's controls would produce for
+            the object, each (H, object_state_dim); and the robot/
+            end-effector's own physical position along that same rollout,
+            (H, 3) -- a different thing from `robot_plan`, which is in
+            object-pose space, not robot space.
         """
         obj_state0 = self.task.object_state_from_robot(state)
         object_plan = self.object_subproblem.nominal_plan(
             obj_state0, params.object_params
         )
-        robot_plan = self.robot_subproblem.nominal_plan(
+        robot_plan, robot_trace = self.robot_subproblem.nominal_plan(
             state, params.robot_params
         )
-        return object_plan, robot_plan
+        return object_plan, robot_plan, robot_trace
 
     def sample_knots(self, params: ADMMParams) -> Tuple[jax.Array, ADMMParams]:
         """Not used -- `ADMM.optimize()` overrides the generic template."""
