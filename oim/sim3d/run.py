@@ -19,7 +19,7 @@ constructed directly, so no display is involved.
 """
 
 import time
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +30,7 @@ from mujoco import mjx
 from oim.alg_base import SamplingBasedController
 from oim.algs.admm import ADMM
 from oim.objects import wrap_angle
-from oim.sim3d.plan_overlay import PlanOverlay
+from oim.sim3d.plan_overlay import BlockTrace, PlanOverlay, traces_for
 from oim.tasks.pusht import PushT
 from oim.utils.video import VideoRecorder
 
@@ -121,29 +121,20 @@ class _OffscreenRecorder:
         )
         self.active = self.recorder.start()
         self.overlay = overlay
-        self._plans: Optional[Tuple[np.ndarray, ...]] = None
+        self._traces: List[BlockTrace] = []
 
-    def set_plans(
-        self,
-        object_plan: np.ndarray,
-        robot_trace: np.ndarray,
-        object_samples: Optional[np.ndarray] = None,
-        robot_samples: Optional[np.ndarray] = None,
-        draw_chosen: bool = True,
-    ) -> None:
-        """Hold the plans to composite into subsequent frames.
+    def set_plans(self, traces: Sequence[BlockTrace]) -> None:
+        """Hold the blocks to composite into subsequent frames.
 
         Called once per control step, while frames are captured once per
         physics step -- so the same plans are drawn across the substeps they
         were computed for, which is exactly their period of validity.
+
+        Args:
+            traces: One `BlockTrace` per block, from
+                `oim.sim3d.plan_overlay.traces_for`.
         """
-        self._plans = (
-            np.asarray(object_plan),
-            np.asarray(robot_trace),
-            None if object_samples is None else np.asarray(object_samples),
-            None if robot_samples is None else np.asarray(robot_samples),
-            draw_chosen,
-        )
+        self._traces = list(traces)
 
     def capture(self, mj_data: mujoco.MjData) -> None:
         """Render and encode one frame, if this physics step is on-stride."""
@@ -153,9 +144,10 @@ class _OffscreenRecorder:
             return
         self.renderer.update_scene(mj_data, self.camera)
         # After update_scene, not before: it rebuilds the scene from the
-        # model and resets ngeom, discarding anything added earlier.
-        if self.overlay is not None and self._plans is not None:
-            self.overlay.draw(self.renderer.scene, *self._plans)
+        # model and resets ngeom, discarding anything added earlier. This
+        # is what puts the trajectories in the mp4 as well as the viewer.
+        if self.overlay is not None and self._traces:
+            self.overlay.draw(self.renderer.scene, self._traces)
         self.recorder.add_frame(self.renderer.render().tobytes())
 
     def close(self) -> None:
@@ -366,20 +358,24 @@ def _run(
             log["object_plan"].append(object_plan)
             log["robot_plan"].append(np.asarray(robot_plan))
             if recorder is not None:
-                object_samples = None
-                robot_samples = None
-                if show_samples:
-                    object_samples = np.asarray(params.object_samples)
-                    # trace_sites: (num_samples, H+1, num_trace_sites, 3)
-                    # -- this task has exactly one trace site (the pusher
-                    # tip).
-                    robot_samples = np.asarray(rollouts.trace_sites)[:, :, 0, :]
                 recorder.set_plans(
-                    object_plan,
-                    robot_trace,
-                    object_samples,
-                    robot_samples,
-                    show_optimal,
+                    traces_for(
+                        robot_chosen=robot_trace if show_optimal else None,
+                        object_chosen=object_plan if show_optimal else None,
+                        # trace_sites: (num_samples, H+1, num_trace_sites,
+                        # 3) -- this task has exactly one trace site (the
+                        # pusher tip).
+                        robot_samples=(
+                            np.asarray(rollouts.trace_sites)[:, :, 0, :]
+                            if show_samples
+                            else None
+                        ),
+                        object_samples=(
+                            np.asarray(params.object_samples)
+                            if show_samples
+                            else None
+                        ),
+                    )
                 )
 
         tq = (
@@ -504,6 +500,8 @@ def run_3d_plain(
     video_fps: float = 30.0,
     video_size: Tuple[int, int] = (720, 480),
     camera: Optional[Union[str, int]] = None,
+    show_samples: bool = False,
+    show_optimal: bool = False,
 ) -> Dict[str, Any]:
     """Run a plain (non-ADMM) controller headlessly and return a log.
 
@@ -534,6 +532,12 @@ def run_3d_plain(
         video_size: (width, height) of the video in pixels.
         camera: Model camera name or id to render from. None uses the
             default free camera.
+        show_samples: Composite this controller's sampled candidate
+            rollouts into the recorded frames. A flat controller has one
+            population, in robot space, so one block is drawn where ADMM
+            draws two.
+        show_optimal: Composite the trajectory it chose, thicker. Independent
+            of `show_samples` -- either, both, or neither.
 
     Returns:
         A log dict with the same trajectory keys as `run_3d_admm`.
@@ -541,6 +545,12 @@ def run_3d_plain(
     Raises:
         ValueError: If `record_dir` is given without `record_name`.
     """
+    show_plans = show_samples or show_optimal
+    overlay = (
+        PlanOverlay(horizon=ctrl.ctrl_steps, max_blocks=1)
+        if show_plans
+        else None
+    )
     recorder = None
     if record_dir is not None:
         if record_name is None:
@@ -552,6 +562,7 @@ def run_3d_plain(
             target_fps=video_fps,
             size=video_size,
             camera=camera,
+            overlay=overlay,
         )
     try:
         return _run_plain(
@@ -566,6 +577,8 @@ def run_3d_plain(
             goal_theta_tol,
             verbose,
             recorder,
+            show_samples,
+            show_optimal,
         )
     finally:
         if recorder is not None:
@@ -584,12 +597,17 @@ def _run_plain(
     goal_theta_tol: float,
     verbose: bool,
     recorder: Optional[_OffscreenRecorder],
+    show_samples: bool = False,
+    show_optimal: bool = False,
 ) -> Dict[str, Any]:
     """The flat closed loop itself; see `run_3d_plain` for the arguments."""
     replan_period = 1.0 / frequency
     sim_steps_per_replan = max(int(replan_period / mj_model.opt.timestep), 1)
     jit_optimize = jax.jit(ctrl.optimize)
     jit_interp_func = jax.jit(ctrl.interp_func)
+    # Only the chosen path needs a rollout of its own; the candidates come
+    # free with the `Trajectory` `optimize` already returns.
+    jit_trace = jax.jit(ctrl.nominal_trace) if show_optimal else None
 
     mjx_data = task.make_data()
     mjx_data = mjx_data.replace(
@@ -613,9 +631,28 @@ def _run_plain(
             time=mj_data.time,
         )
         t0 = time.perf_counter()
-        params, _ = jit_optimize(mjx_data, params)
+        params, rollouts = jit_optimize(mjx_data, params)
         jax.block_until_ready(params)
         log["compute_time"].append(time.perf_counter() - t0)
+
+        # After optimize and before the substep loop, so the recorder draws
+        # this step's plan into every frame of the step it belongs to --
+        # the same placement, and the same overlay, the ADMM path uses.
+        if recorder is not None and (show_samples or show_optimal):
+            recorder.set_plans(
+                traces_for(
+                    robot_chosen=(
+                        np.asarray(jit_trace(mjx_data, params))
+                        if jit_trace is not None
+                        else None
+                    ),
+                    robot_samples=(
+                        np.asarray(rollouts.trace_sites)[:, :, 0, :]
+                        if show_samples
+                        else None
+                    ),
+                )
+            )
 
         tq = (
             jnp.arange(sim_steps_per_replan) * mj_model.opt.timestep

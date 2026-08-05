@@ -10,7 +10,7 @@ import numpy as np
 
 from oim import ROOT
 from oim.alg_base import SamplingBasedController
-from oim.sim3d.plan_overlay import PlanOverlay
+from oim.sim3d.plan_overlay import PlanOverlay, traces_for
 from oim.utils.video import VideoRecorder
 
 """
@@ -67,25 +67,19 @@ def run_interactive(  # noqa: PLR0912, PLR0915
             timestamp. Defaults to "simulation" for callers that don't
             care; pass something identifying the task and method for a
             more informative filename.
-        show_samples: Overlay each block's sampled candidate rollouts (see
-            `oim.sim3d.plan_overlay`). Requires a controller exposing
-            `nominal_plans`, i.e. `ADMM`.
-        show_optimal: Overlay each block's chosen trajectory. Independent
+        show_samples: Overlay the controller's sampled candidate rollouts
+            (see `oim.sim3d.plan_overlay`). Works for any sampling-based
+            controller: a flat one draws its single robot-space population,
+            ADMM draws its object and robot blocks separately.
+        show_optimal: Overlay the chosen trajectory, thicker. Independent
             of `show_samples` -- either, both, or neither. Both off by
             default: when both are off, nothing here runs at all, so it
             cannot affect timing.
-
-    Raises:
-        TypeError: If `show_samples`/`show_optimal` is set for a
-            controller that cannot produce plans.
     """
     show_plans = show_samples or show_optimal
-    if show_plans and not hasattr(controller, "nominal_plans"):
-        raise TypeError(
-            f"show_samples/show_optimal need a controller with "
-            f"nominal_plans(); {type(controller).__name__} has none "
-            f"(only ADMM does)."
-        )
+    # ADMM has a second block, in object-pose space, that no flat
+    # controller has; everything else is drawn from the generic interface.
+    has_blocks = hasattr(controller, "nominal_plans")
     # Report the planning horizon in seconds for debugging
     print(
         f"Planning with {controller.ctrl_steps} steps "
@@ -193,9 +187,16 @@ def run_interactive(  # noqa: PLR0912, PLR0915
         # between frames, so the slot is reserved once here.
         overlay = None
         if show_plans:
-            overlay = PlanOverlay(horizon=controller.ctrl_steps)
+            overlay = PlanOverlay(
+                horizon=controller.ctrl_steps,
+                max_blocks=2 if has_blocks else 1,
+            )
             overlay_base = viewer.user_scn.ngeom
-            jit_plans = jax.jit(controller.nominal_plans)
+            jit_plans = (
+                jax.jit(controller.nominal_plans)
+                if has_blocks
+                else jax.jit(controller.nominal_trace)
+            )
 
         # Add geometry for the ghost reference
         if reference is not None:
@@ -236,22 +237,38 @@ def run_interactive(  # noqa: PLR0912, PLR0915
                             ii += 1
 
             # Overlay each block's sampled and/or chosen trajectories (the
-            # robot samples from the same `rollouts` this step's
+            # robot samples come from the same `rollouts` this step's
             # `show_traces` block, if enabled, also reads).
             if overlay is not None:
-                object_plan, _, robot_trace = jit_plans(mjx_data, policy_params)
-                object_samples = None
-                robot_samples = None
-                if show_samples:
-                    object_samples = np.asarray(policy_params.object_samples)
-                    robot_samples = np.asarray(rollouts.trace_sites)[:, :, 0, :]
+                object_plan = None
+                if has_blocks:
+                    object_plan, _, robot_trace = jit_plans(
+                        mjx_data, policy_params
+                    )
+                else:
+                    robot_trace = jit_plans(mjx_data, policy_params)
                 overlay.draw(
                     viewer.user_scn,
-                    np.asarray(object_plan),
-                    np.asarray(robot_trace),
-                    object_samples,
-                    robot_samples,
-                    show_optimal,
+                    traces_for(
+                        robot_chosen=(
+                            np.asarray(robot_trace) if show_optimal else None
+                        ),
+                        object_chosen=(
+                            np.asarray(object_plan)
+                            if show_optimal and object_plan is not None
+                            else None
+                        ),
+                        robot_samples=(
+                            np.asarray(rollouts.trace_sites)[:, :, 0, :]
+                            if show_samples
+                            else None
+                        ),
+                        object_samples=(
+                            np.asarray(policy_params.object_samples)
+                            if show_samples and has_blocks
+                            else None
+                        ),
+                    ),
                     base=overlay_base,
                 )
 

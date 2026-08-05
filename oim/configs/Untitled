@@ -1,0 +1,80 @@
+(pls-vla) nikolaraicevic@nikolaraicevic-Legion-Pro-7-16IRX8H:~/Workspace/Internal/PrimitiveLatentSkill-VLA$ source pls-vla/bin/activate
+
+python scripts/train_skill_predictor.py \
+  --data dataset --dataset-version v3-dual-task0000 \
+  --wandb --push-to-hub --hub-name v3-dual-task0000
+data: skill_dataset version v3-dual-task0000 split=train
+      d_vis=768  d_pre=4096  d_skill=4096  N=3680  val N=360
+model: 4,436,324 parameters, 4 tokens/forward
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: No netrc file found, creating one.
+wandb: Appending key for api.wandb.ai to your netrc file: /home/nikolaraicevic/.netrc
+wandb: Currently logged in as: nmarinosraitsevits (ucsd_erl) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.28.1
+wandb: Run data is saved locally in /home/nikolaraicevic/Workspace/Internal/PrimitiveLatentSkill-VLA/wandb/run-20260805_113053-rmlgyg35
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run glorious-durian-1
+wandb: ⭐️ View project at https://wandb.ai/ucsd_erl/pls-vla
+wandb: 🚀 View run at https://wandb.ai/ucsd_erl/pls-vla/runs/rmlgyg35
+wandb: ucsd_erl/pls-vla  run=glorious-durian-1
+
+training (3s, 20 epochs)
+  epoch   4  loss 29.8930  (skill 3.6731  progress 2.6220)   val nmse 2.3339
+  epoch   8  loss 27.2616  (skill 1.7921  progress 2.5470)   val nmse 1.3824
+  epoch  12  loss 26.6327  (skill 1.2332  progress 2.5399)   val nmse 1.0851
+  epoch  16  loss 26.3461  (skill 1.0078  progress 2.5338)   val nmse 1.0036
+  epoch  20  loss 26.2581  (skill 0.9725  progress 2.5286)   val nmse 0.9763
+  loss 1765.2668 -> 26.2581
+
+skill latent on validation (normalized MSE; 1.0 = predicting the global mean)
+  identity  S_hat := e_t     0.6841   cos +0.9384
+  SkillPredictor             0.9763   cos +0.9000
+  -> DOES NOT beat the identity baseline; this model earns nothing
+
+subtask progress (mean absolute error)
+  constant 0.5               0.2857
+  ProgressHead               0.2840
+
+[SKILL] attention mass, last layer
+  visual tokens    0.099
+  pre-logit tokens 0.298
+  readout tokens   0.604
+wandb: 
+wandb: Run history:
+wandb:         final/attention_pre ▁
+wandb:     final/attention_readout ▁
+wandb:         final/attention_vis ▁
+wandb:       final/identity_cosine ▁
+wandb:         final/identity_gain ▁
+wandb:         final/identity_nmse ▁
+wandb:                  final/loss ▁
+wandb: final/progress_baseline_mae ▁
+wandb:          final/progress_mae ▁
+wandb:          final/skill_cosine ▁
+wandb:                         +15 ...
+wandb: 
+wandb: Run summary:
+wandb:         final/attention_pre 0.29767
+wandb:     final/attention_readout 0.6037
+wandb:         final/attention_vis 0.09862
+wandb:       final/identity_cosine 0.9384
+wandb:         final/identity_gain 0.70071
+wandb:         final/identity_nmse 0.6841
+wandb:                  final/loss 26.68622
+wandb: final/progress_baseline_mae 0.28566
+wandb:          final/progress_mae 0.28398
+wandb:          final/skill_cosine 0.90002
+wandb:                         +16 ...
+wandb: 
+wandb: 🚀 View run glorious-durian-1 at: https://wandb.ai/ucsd_erl/pls-vla/runs/rmlgyg35
+wandb: ⭐️ View project at: https://wandb.ai/ucsd_erl/pls-vla
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260805_113053-rmlgyg35/logs
+
+checkpoint -> outputs/skill_predictor/sp.pt
+  inspect with: python scripts/run_skill_predictor.py --checkpoint outputs/skill_predictor/sp.pt
+Found 3 files to upload
+  Preparing   ████████████████████  3 / 3 ✓
+  Uploading   ████████████████████  1 / 1 files  17.8MB · 4.80MB/s ✓
+  Committing  ████████████████████  3 / 3 ✓
+  hub -> https://huggingface.co/erl-hub/pls-vla-skill-predictor/tree/main/v3-dual-task0000

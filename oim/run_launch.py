@@ -56,7 +56,14 @@ EXAMPLES_DIR = os.path.join(os.path.dirname(ROOT), "examples")
 # penalty and no proximal term. `expand` already drops `n_admm` as an axis;
 # this also keeps a `fixed:` block from putting one on a flat command line,
 # where the script would now reject it rather than ignore it.
-_ADMM_ONLY = ("robot_opt", "object_opt", "n_admm", "rho", "gamma")
+_ADMM_ONLY = (
+    "robot_opt",
+    "object_opt",
+    "n_admm",
+    "rho",
+    "gamma",
+    "consensus_alpha",
+)
 
 # Sweep axes, in nesting order: earlier axes vary slowest, so every cell of
 # one task finishes before the next task starts.

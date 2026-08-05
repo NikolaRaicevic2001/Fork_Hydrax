@@ -12,7 +12,7 @@
 #
 # Each cell is its own process, so it gets the whole GPU; the launcher
 # waits for the previous cell's memory to come back before starting the
-# next (`--min-free-mib N` to also demand headroom).
+# next.
 #
 # Cells that make no sense are skipped automatically: the 2D world has no
 # flat baselines (`PushT2D` implements only `ConsensusTask`).
@@ -25,8 +25,8 @@ sweep:
     - { script: open_table }
     - { script: single_obstacle }
     - { script: shelf_gap }
-    - { script: ycb_clutter }
-    - { script: icra_sign }
+    # - { script: ycb_clutter }
+    # - { script: icra_sign }
     # - { script: clutter, robot: xarm6 }
     # - { script: clutter, robot: point }
     # - { script: pusht2d_clutter }
@@ -53,7 +53,12 @@ sweep:
 # accept (a 2D script has no --record) is dropped for the rest, and the
 # launcher prints which.
 fixed:
-  steps: 1000
+  steps: 100
   headless: true # no viewer: a sweep cannot wait on a window
   record: true # an mp4 per cell; --set record=false to skip
+  # Trajectory overlay, composited into each cell's mp4. Works for every
+  # 3D algorithm: ADMM draws its object block (blue) and robot block
+  # (orange) separately, a flat baseline draws its one robot population.
+  show_samples: true # thin lines: the candidate rollouts considered
+  show_optimal: true # thick line: the trajectory chosen
   # warp: true          # MuJoCo Warp backend instead of JAX

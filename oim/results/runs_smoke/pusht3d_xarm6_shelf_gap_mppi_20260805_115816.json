@@ -1,0 +1,368 @@
+{
+  "schema": {
+    "indexing": "state[i] --robot_control[i]--> state[i+1]. State series (time, object_pose, object_velocity, robot_pos, robot_vel, qpos, qvel) have steps_run+1 entries, entry 0 being the initial condition. Input and wrench series (robot_control, wrench, wrench_consensus) have steps_run entries, entry i being what was applied over the step from state[i] to state[i+1].",
+    "frames": "object_pose is [x, y, theta] in the world frame; object_velocity is its time derivative [vx, vy, omega]. object_footprint_body is in the object's body frame -- rotate by theta and translate by [x, y] for world coordinates. Wrenches are [f_x, f_y, tau] in the world frame about the object's origin.",
+    "plans": "object_plan and robot_plan, present only when a run was asked for them, are the two ADMM blocks' predictions of the *same* object's trajectory over the horizon, made at that step: what the object block intends, and what the robot block's controls would produce. Shape (steps_run, H, 3), aligned with the input series -- entry i was computed from state[i]. Their divergence is the primal residual, resolved per timestep instead of summed into a scalar.",
+    "velocities": "In 2D both velocities are difference quotients of the logged positions, which is exact there (the engine integrates pose with forward Euler), so entry 0 is zero. In 3D object_velocity is MuJoCo's own qvel for the block, and robot_vel is a difference quotient of the contact point, which has no qvel entry."
+  },
+  "run": {
+    "world": "3d",
+    "task": "pusht3d_xarm6_shelf_gap",
+    "robot": "xarm6",
+    "algorithm": "mppi",
+    "robot_opt": "mppi",
+    "object_opt": null,
+    "seed": 1
+  },
+  "hyperparameters": {
+    "config": "xarm6",
+    "steps": 4,
+    "samples": 64,
+    "horizon": 25,
+    "n_admm": null,
+    "rho": null,
+    "gamma": null,
+    "consensus_alpha": null,
+    "control_dt": 0.05,
+    "goal_pos_tol": 0.05,
+    "goal_theta_tol": 0.05
+  },
+  "static": {
+    "goal": [
+      0.20000000298023224,
+      0.75,
+      3.1415927410125732
+    ],
+    "object_footprint_body": [
+      [
+        -0.10000000149011612,
+        0.02500000037252903
+      ],
+      [
+        0.10000000149011612,
+        0.02500000037252903
+      ],
+      [
+        0.10000000149011612,
+        -0.02500000037252903
+      ],
+      [
+        0.02500000037252903,
+        -0.02500000037252903
+      ],
+      [
+        0.02500000037252903,
+        -0.125
+      ],
+      [
+        -0.02500000037252903,
+        -0.125
+      ],
+      [
+        -0.02500000037252903,
+        -0.02500000037252903
+      ],
+      [
+        -0.10000000149011612,
+        -0.02500000037252903
+      ]
+    ],
+    "object_limit_surface_d": [
+      0.12742100656032562,
+      0.12742100656032562,
+      2.123683214187622
+    ],
+    "object_wrench_limit": [
+      7.8480000495910645,
+      7.8480000495910645,
+      0.47088000178337097
+    ],
+    "obstacles": [
+      {
+        "type": "box",
+        "center": [
+          0.0,
+          0.5
+        ],
+        "half_extents": [
+          0.10000000149011612,
+          0.125
+        ],
+        "angle": 0.0
+      },
+      {
+        "type": "box",
+        "center": [
+          0.4000000059604645,
+          0.5
+        ],
+        "half_extents": [
+          0.10000000149011612,
+          0.125
+        ],
+        "angle": 0.0
+      }
+    ],
+    "robot": "xarm6",
+    "sim_timestep": 0.002,
+    "qpos_size": 8,
+    "qvel_size": 8,
+    "block_qpos_adr": [
+      5,
+      6,
+      7
+    ],
+    "block_dof_adr": [
+      5,
+      6,
+      7
+    ]
+  },
+  "dynamic": {
+    "time": [
+      0.0,
+      0.05000000000000003,
+      0.10000000000000007,
+      0.1500000000000001,
+      0.20000000000000015
+    ],
+    "object_pose": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "object_velocity": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "robot_pos": [
+      [
+        -0.04505741968750954,
+        0.44908902049064636
+      ],
+      [
+        -0.036935414322846506,
+        0.4490572590080764
+      ],
+      [
+        -0.02946398970608685,
+        0.45612782584860134
+      ],
+      [
+        -0.02312998699515645,
+        0.4501439059958552
+      ],
+      [
+        -0.01754313082333615,
+        0.43525278688501357
+      ]
+    ],
+    "robot_vel": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.1624401072932606,
+        -0.0006352296513989497
+      ],
+      [
+        0.1494284923351931,
+        0.14141133681049856
+      ],
+      [
+        0.12668005421860806,
+        -0.11967839705492311
+      ],
+      [
+        0.11173712343640597,
+        -0.29782238221683244
+      ]
+    ],
+    "robot_control": [
+      [
+        0.23514002561569214,
+        0.6244356632232666,
+        -0.6333745718002319,
+        -0.31857830286026,
+        -0.4572482109069824
+      ],
+      [
+        0.7319968938827515,
+        0.8283953666687012,
+        -0.8298631310462952,
+        -0.11025604605674744,
+        0.11411218345165253
+      ],
+      [
+        -0.4198654890060425,
+        0.23785382509231567,
+        -0.5772596597671509,
+        -0.6097502112388611,
+        -0.11472304165363312
+      ],
+      [
+        -0.9527400732040405,
+        0.045771338045597076,
+        -0.33902114629745483,
+        -0.5368480682373047,
+        -0.34358856081962585
+      ]
+    ],
+    "qpos": [
+      [
+        0.0,
+        -0.785,
+        -0.785,
+        0.0,
+        1.5708,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.009462365589219162,
+        -0.7620630281571551,
+        -0.804213105294019,
+        -0.011211205578748456,
+        1.5550936107754136,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.03955047944770576,
+        -0.7258847356933964,
+        -0.8343762890301142,
+        -0.014860405727554513,
+        1.557649901338459,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.031033831461654695,
+        -0.7119226117994304,
+        -0.8615342345284974,
+        -0.035273003590010024,
+        1.5547870911210075,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.004636506776878786,
+        -0.707607140002468,
+        -0.8793780245649607,
+        -0.05873594782173042,
+        1.5425770639072647,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "qvel": [
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.20148026876226915,
+        0.5418390361640532,
+        -0.5120954084626858,
+        -0.25365138298809253,
+        -0.3663770838704315,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.639687712065256,
+        0.721953365803563,
+        -0.6230493863321871,
+        -0.08334290394952953,
+        0.0939844488588113,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.3554552859232917,
+        0.2067438416703906,
+        -0.47767032060412595,
+        -0.4900243058304423,
+        -0.08871967301274764,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.8164862310651527,
+        0.04426404588304814,
+        -0.284268950847432,
+        -0.4354852244577868,
+        -0.27210459411907933,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "compute_time": [
+      3.487735323000379,
+      2.262079690000064,
+      0.03102260300056514,
+      0.02977366599952802
+    ]
+  }
+}

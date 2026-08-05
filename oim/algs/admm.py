@@ -1144,6 +1144,26 @@ class ADMM(SamplingBasedController):
         )
         return object_plan, robot_plan, robot_trace
 
+    def nominal_trace(self, state: mjx.Data, params: ADMMParams) -> jax.Array:
+        """The robot block's chosen end-effector path, (H, 3).
+
+        Overridden not to change the answer -- the base class would roll out
+        the same `params.mean`, since `ADMMParams.mean` delegates to the
+        robot block's -- but to reuse the rollout `nominal_plan` already
+        does, rather than paying for a second one.
+
+        Args:
+            state: The state the plan starts from.
+            params: The ADMM parameters `optimize` just returned.
+
+        Returns:
+            The trace site's world positions, (H, 3).
+        """
+        _, robot_trace = self.robot_subproblem.nominal_plan(
+            state, params.robot_params
+        )
+        return robot_trace
+
     def sample_knots(self, params: ADMMParams) -> Tuple[jax.Array, ADMMParams]:
         """Not used -- `ADMM.optimize()` overrides the generic template."""
         raise NotImplementedError(

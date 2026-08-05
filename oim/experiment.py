@@ -234,6 +234,24 @@ def build_parser(
             action="store_true",
             help="Write an mp4 to oim/recordings/ (needs ffmpeg).",
         )
+        # Not algorithm-specific: every sampling-based controller has a
+        # candidate population and a chosen trajectory, so these sit beside
+        # --record rather than under one subcommand. ADMM draws two blocks
+        # (object and robot), a flat baseline draws its one.
+        parser.add_argument(
+            "--show-samples",
+            action="store_true",
+            default=run["show_samples"],
+            help="Overlay sampled candidate rollouts (thin lines). "
+            "Independent of --show-optimal.",
+        )
+        parser.add_argument(
+            "--show-optimal",
+            action="store_true",
+            default=run["show_optimal"],
+            help="Overlay the chosen trajectory (thick line). "
+            "Independent of --show-samples.",
+        )
     else:
         parser.add_argument(
             "--contact-action",
@@ -325,20 +343,6 @@ def build_parser(
             "--headless",
             action="store_true",
             help="No viewer: run --steps steps and save a run file.",
-        )
-        admm.add_argument(
-            "--show-samples",
-            action="store_true",
-            default=run["show_samples"],
-            help="Overlay each block's sampled candidate rollouts "
-            "(green). Independent of --show-optimal.",
-        )
-        admm.add_argument(
-            "--show-optimal",
-            action="store_true",
-            default=run["show_optimal"],
-            help="Overlay each block's chosen trajectory (orange), drawn "
-            "the same way as a sample. Independent of --show-samples.",
         )
     return parser
 
@@ -472,14 +476,8 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             show_traces=False,
             record_video=args.record,
             recording_prefix=name.stem,
-            **(
-                {
-                    "show_samples": args.show_samples,
-                    "show_optimal": args.show_optimal,
-                }
-                if is_admm
-                else {}
-            ),
+            show_samples=args.show_samples,
+            show_optimal=args.show_optimal,
         )
         return
 
@@ -500,14 +498,10 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
         record_dir=RECORDINGS_DIR if args.record else None,
         record_name=name(),
         camera=camera,
-        **(
-            {
-                "show_samples": args.show_samples,
-                "show_optimal": args.show_optimal,
-            }
-            if is_admm
-            else {}
-        ),
+        # Both runners take these now: a flat baseline has a candidate
+        # population and a chosen trajectory just as ADMM's blocks do.
+        show_samples=args.show_samples,
+        show_optimal=args.show_optimal,
     )
     _save(
         experiment,
