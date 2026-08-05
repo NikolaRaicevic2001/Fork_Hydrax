@@ -73,6 +73,7 @@ admm:
   noise_min: 0.0
   noise_kappa: 0.0
   noise_max: 0.0
+  consensus_alpha: 1.0
 
 run:
   seed: 5

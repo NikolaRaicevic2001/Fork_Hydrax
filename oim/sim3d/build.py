@@ -181,6 +181,7 @@ def build_admm_3d(
     n_admm: int,
     rho: float,
     gamma: float,
+    consensus_alpha: float = 1.0,
 ) -> Tuple[PushT, ADMM, mujoco.MjModel, mujoco.MjData]:
     """Task, ADMM controller, and execution model/data for the 3D world.
 
@@ -197,6 +198,8 @@ def build_admm_3d(
         n_admm: Max ADMM iterations per control step.
         rho: Initial penalty.
         gamma: Proximal weight.
+        consensus_alpha: EMA weight on A^o/A^r across ADMM rounds (1.0 =
+            raw). See `ADMM`.
 
     Returns:
         `(task, controller, exec model, exec data)`.
@@ -255,6 +258,7 @@ def build_admm_3d(
         noise_min=adm["noise_min"],
         noise_kappa=adm["noise_kappa"],
         noise_max=adm["noise_max"],
+        consensus_alpha=consensus_alpha,
     )
     mj_model, mj_data = _execution_model(task, robot, w3)
     return task, ctrl, mj_model, mj_data

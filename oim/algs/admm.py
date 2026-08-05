@@ -728,6 +728,8 @@ class _ADMMCarry:
     dual_res: jax.Array
     object_samples: jax.Array
     rng: jax.Array
+    w_obj_ema: jax.Array
+    w_rob_ema: jax.Array
 
 
 class ADMM(SamplingBasedController):
@@ -762,6 +764,7 @@ class ADMM(SamplingBasedController):
         noise_max: Optional[float] = None,
         rollout: Optional[RobotRollout] = None,
         debug_print: bool = True,
+        consensus_alpha: float = 1.0,
     ) -> None:
         """Build the ADMM controller from two pre-built sub-optimizers.
 
@@ -802,6 +805,16 @@ class ADMM(SamplingBasedController):
                 host callback inside the compiled loop, so it costs a
                 synchronization per iteration -- turn it off for timing
                 runs or long closed loops.
+            consensus_alpha: EMA weight on A^o/A^r *across ADMM rounds*
+                (1.0 = raw, matching the paper). Each round's A^o/A^r is a
+                single noisy resampling estimate (one MPPI pass over a
+                freshly-sampled batch), not a converged proposal, so the
+                disagreement it feeds into z/the residuals is dominated by
+                resampling variance between rounds rather than by the
+                blocks actually disagreeing. Smoothing across rounds (not
+                within one rollout's own horizon -- that axis carries a
+                different, much smaller noise source) targets that
+                variance directly.
         """
         if n_admm < 1:
             raise ValueError("n_admm must be at least 1")
@@ -824,6 +837,7 @@ class ADMM(SamplingBasedController):
         self.noise_kappa = noise_kappa
         self.noise_max = noise_min if noise_max is None else noise_max
         self.debug_print = debug_print
+        self.consensus_alpha = consensus_alpha
 
         self.object_subproblem = ObjectSubproblem(
             task, object_optimizer, consensus, proximal_weight
@@ -945,18 +959,31 @@ class ADMM(SamplingBasedController):
             state, robot_params
         )
 
-        z_new = self.consensus.z_update(
-            w_obj, w_rob, carry.gamma_o, carry.gamma_r
+        # EMA across ADMM rounds (not within one rollout's horizon -- see
+        # `consensus_alpha`'s docstring): each round's raw w_obj/w_rob is a
+        # single noisy resampling estimate, so consensus is computed
+        # against a smoothed A^o/A^r instead of the raw one.
+        w_obj_ema = (
+            self.consensus_alpha * w_obj
+            + (1.0 - self.consensus_alpha) * carry.w_obj_ema
         )
-        gamma_o = self.consensus.dual_update(w_obj, z_new, carry.gamma_o)
-        gamma_r = self.consensus.dual_update(w_rob, z_new, carry.gamma_r)
+        w_rob_ema = (
+            self.consensus_alpha * w_rob
+            + (1.0 - self.consensus_alpha) * carry.w_rob_ema
+        )
+
+        z_new = self.consensus.z_update(
+            w_obj_ema, w_rob_ema, carry.gamma_o, carry.gamma_r
+        )
+        gamma_o = self.consensus.dual_update(w_obj_ema, z_new, carry.gamma_o)
+        gamma_r = self.consensus.dual_update(w_rob_ema, z_new, carry.gamma_r)
 
         # Residuals, in the same normalized units as the penalty so that
         # eps_r/eps_s are scale-free.
         #   primal r = [A^o - z ; A^r - z]   (both blocks stacked)
         #   dual   d = rho * (z^{l+1} - z^{l})
         primal_res = self.consensus.residual_norm(
-            jnp.concatenate([w_obj - z_new, w_rob - z_new])
+            jnp.concatenate([w_obj_ema - z_new, w_rob_ema - z_new])
         )
         dual_res = carry.rho * self.consensus.residual_norm(z_new - carry.z)
 
@@ -988,6 +1015,8 @@ class ADMM(SamplingBasedController):
             dual_res=dual_res,
             object_samples=object_samples,
             rng=rng,
+            w_obj_ema=w_obj_ema,
+            w_rob_ema=w_rob_ema,
         )
         return new_carry, rollouts
 
@@ -1035,6 +1064,10 @@ class ADMM(SamplingBasedController):
             # left here is fine -- the first real call below replaces it.
             object_samples=params.object_samples,
             rng=admm_rng,
+            # Zero-init each real control step: the EMA is scoped to one
+            # step's ADMM rounds, the same as `dual_res`'s inf-init above.
+            w_obj_ema=jnp.zeros_like(z),
+            w_rob_ema=jnp.zeros_like(z),
         )
 
         # Run one ADMM iteration unconditionally (n_admm >= 1), which also

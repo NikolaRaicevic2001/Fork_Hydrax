@@ -309,6 +309,12 @@ def build_parser(
             default=adm["object_opt"],
             help="Sampling optimizer for the object-level ADMM block.",
         )
+        admm.add_argument(
+            "--consensus-alpha",
+            type=float,
+            default=adm["consensus_alpha"],
+            help="EMA weight on A^o/A^r across ADMM rounds (1.0 = raw).",
+        )
     admm.add_argument("--n-admm", type=int, default=adm["n_admm"])
     admm.add_argument("--rho", type=float, default=adm["rho"])
     admm.add_argument("--gamma", type=float, default=adm["gamma"])
@@ -379,6 +385,7 @@ def _save(
             n_admm=getattr(args, "n_admm", None),
             rho=getattr(args, "rho", None),
             gamma=getattr(args, "gamma", None),
+            consensus_alpha=getattr(args, "consensus_alpha", None),
             control_dt=control_dt,
             goal_pos_tol=run_cfg["goal_pos_tol"],
             goal_theta_tol=run_cfg["goal_theta_tol"],
@@ -427,6 +434,7 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             n_admm=args.n_admm,
             rho=args.rho,
             gamma=args.gamma,
+            consensus_alpha=args.consensus_alpha,
         )
         name = experiment.run_name(
             args.robot, "admm", args.robot_opt, args.object_opt

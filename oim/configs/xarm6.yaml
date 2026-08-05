@@ -38,7 +38,7 @@ world2d:
 sampler:
   num_samples: 64 # higher exhausts an 11 GB GPU for the arm; 96 measured
   # not to help reliably anyway
-  horizon: 15 # consensus horizon H, in steps of planning_dt
+  horizon: 25 # consensus horizon H, in steps of planning_dt
   robot_num_knots: 4
   robot_spline: linear
   object_spline: zero # the object block always uses num_knots = horizon
@@ -76,6 +76,11 @@ admm:
   noise_min: 0.0
   noise_kappa: 0.0
   noise_max: 0.0
+  # EMA weight on A^o/A^r across ADMM rounds (1.0 = raw, paper's
+  # Algorithm 4). Each round's A^o/A^r is a single noisy resampling
+  # estimate, not a converged proposal -- smoothing across rounds trades
+  # slower correction for less resampling variance feeding the residual.
+  consensus_alpha: 1.0
 
 run:
   seed: 5
