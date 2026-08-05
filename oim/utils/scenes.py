@@ -7,8 +7,8 @@ itself never branches on a scene name or holds scene-specific data -- it
 looks up one `SceneSpec` by name and wraps cost functions/ADMM plumbing
 around whatever it's handed. A new environment is one new entry here plus
 its own MJCF (with its own `<camera>`/`<keyframe>` for recording/starting
-pose, read generically by examples/pusht.py), not a change to
-oim/tasks/pusht.py.
+pose, read generically), plus a three-line `examples/` script naming it --
+never a change to oim/tasks/pusht.py or oim/experiment.py.
 
 Nothing checks at runtime that a `SceneSpec` and its MJCF agree -- the
 planner would simply reason about a world the simulator is not running.

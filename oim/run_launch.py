@@ -1,10 +1,16 @@
-r"""Sweep driver: run `examples/pusht.py` once per parameter combination.
+r"""Sweep driver: run one `examples/` script per parameter combination.
 
 A benchmark or ablation is a cartesian product -- tasks x algorithms x
 horizons x sampler budgets x seeds -- and this runs it. It holds no
-planning code of its own: each cell is a subprocess invocation of
-`examples/pusht.py`, so a cell is exactly a command you could have typed,
+planning code of its own: each cell is a subprocess invocation of the
+task's own script, so a cell is exactly a command you could have typed,
 and the launcher prints that command before running it.
+
+The `task` axis names the script: `{ script: shelf_gap }` runs
+`examples/shelf_gap.py`, and any other key in that entry becomes a flag for
+it (`{ script: clutter, robot: xarm6 }`). Each script advertises only the
+flags its world has, so the launcher reads the parser of the script it is
+about to run rather than assuming one shared CLI.
 
     # the whole product in oim/configs/run_launch_config.yaml
     uv run python -m oim.run_launch
@@ -27,6 +33,7 @@ the traced shapes.
 """
 
 import argparse
+import functools
 import importlib.util
 import itertools
 import json
@@ -34,15 +41,22 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import jax
 import yaml
 
 from oim import ROOT
+from oim.experiment import build_parser
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), "configs")
-PUSHT = os.path.join(os.path.dirname(ROOT), "examples", "pusht.py")
+EXAMPLES_DIR = os.path.join(os.path.dirname(ROOT), "examples")
+
+# Flags a flat baseline has no use for: it has no consensus to iterate, no
+# penalty and no proximal term. `expand` already drops `n_admm` as an axis;
+# this also keeps a `fixed:` block from putting one on a flat command line,
+# where the script would now reject it rather than ignore it.
+_ADMM_ONLY = ("robot_opt", "object_opt", "n_admm", "rho", "gamma")
 
 # Sweep axes, in nesting order: earlier axes vary slowest, so every cell of
 # one task finishes before the next task starts.
@@ -58,21 +72,39 @@ _AXES = (
 )
 
 
-def _flag_spec() -> Tuple[Dict[str, bool], Dict[str, bool]]:
-    """Ask `examples/pusht.py` which flags it takes, and where.
+def script_path(name: str) -> str:
+    """`examples/{name}.py`, checked to exist.
 
-    Its parser splits on the algorithm name -- world and scene flags before
-    it, solver and run flags after -- and mixes store_true switches with
-    valued options. Rather than restate that here (a copy that silently
-    rots the moment a flag moves), the classification is read off the real
-    parser: a wrong guess would otherwise surface as every cell of a long
-    sweep failing identically.
+    Args:
+        name: A `script:` value from the sweep's `task` axis.
 
     Returns:
-        `(top_level, per_algorithm)`, each mapping a dest name to whether
-        the flag takes a value (False means a bare switch).
+        The absolute path.
+
+    Raises:
+        ValueError: If no such script exists, listing the ones that do.
     """
-    # Importing pusht.py pulls in oim.utils.scenes, whose SCENES registry
+    path = os.path.join(EXAMPLES_DIR, f"{name}.py")
+    if not os.path.exists(path):
+        available = sorted(
+            f[:-3]
+            for f in os.listdir(EXAMPLES_DIR)
+            if f.endswith(".py") and not f.startswith("_")
+        )
+        raise ValueError(
+            f"no examples/{name}.py; available: {available}"
+        )
+    return path
+
+
+@functools.lru_cache(maxsize=None)
+def _load_script(path: str) -> Any:
+    """Import an `examples/` script for its `EXPERIMENT` and its parser.
+
+    Cached: a sweep asks the same handful of scripts once per cell
+    otherwise, and each import compiles an MJCF.
+    """
+    # Importing a script pulls in oim.utils.scenes, whose SCENES registry
     # builds module-level `jnp` arrays (goal/obstacles per scene), which
     # initializes JAX's GPU backend and claims ~75% of the device -- in
     # *this* process, which then holds it for the whole sweep and starves
@@ -85,10 +117,38 @@ def _flag_spec() -> Tuple[Dict[str, bool], Dict[str, bool]]:
     # nothing. Children are unaffected either way -- they are separate
     # processes with their own JAX.
     jax.config.update("jax_platforms", "cpu")
-    spec = importlib.util.spec_from_file_location("_pusht_cli", PUSHT)
+    spec = importlib.util.spec_from_file_location("_oim_example", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    parser = module._build_parser()
+    return module
+
+
+def script_world(name: str) -> str:
+    """Which world a script runs, from its own `EXPERIMENT`."""
+    return _load_script(script_path(name)).EXPERIMENT.world
+
+
+@functools.lru_cache(maxsize=None)
+def _flag_spec(name: str) -> Tuple[Dict[str, bool], Dict[str, bool]]:
+    """Ask one `examples/` script which flags it takes, and where.
+
+    Its parser splits on the algorithm name -- scene and world flags before
+    it, solver and run flags after -- and mixes store_true switches with
+    valued options. Rather than restate that here (a copy that silently
+    rots the moment a flag moves), the classification is read off the real
+    parser: a wrong guess would otherwise surface as every cell of a long
+    sweep failing identically. Read per script, because a 2D script and a
+    3D one genuinely offer different flags.
+
+    Args:
+        name: A `script:` value from the sweep's `task` axis.
+
+    Returns:
+        `(top_level, per_algorithm)`, each mapping a dest name to whether
+        the flag takes a value (False means a bare switch).
+    """
+    module = _load_script(script_path(name))
+    parser = build_parser(module.EXPERIMENT)
 
     top: Dict[str, bool] = {}
     sub: Dict[str, bool] = {}
@@ -143,18 +203,13 @@ def expand(sweep: Dict[str, Any]) -> List[Dict[str, Any]]:
     for values in itertools.product(*(sweep[a] for a in axes)):
         cell = dict(zip(axes, values, strict=True))
         task = cell.get("task", {})
-        world = task.get("world", "3d")
         algorithm = cell.get("algorithm", "admm")
 
-        if world == "2d" and algorithm != "admm":
+        if script_world(task["script"]) == "2d" and algorithm != "admm":
             continue  # PushT2D implements only ConsensusTask
         if algorithm != "admm":
             # Flat baselines have no blocks; collapse the duplicates.
-            cell = {
-                k: v
-                for k, v in cell.items()
-                if k not in ("robot_opt", "object_opt", "n_admm")
-            }
+            cell = {k: v for k, v in cell.items() if k not in _ADMM_ONLY}
         key = json.dumps(cell, sort_keys=True)
         if key in seen:
             continue
@@ -168,29 +223,37 @@ def build_command(
     fixed: Dict[str, Any],
     spec: Optional[Tuple[Dict[str, bool], Dict[str, bool]]] = None,
 ) -> List[str]:
-    """Turn one sweep cell into an `examples/pusht.py` command line.
+    """Turn one sweep cell into a command line for its own script.
 
     Args:
         cell: One combination from `expand`.
         fixed: The config's `fixed` block, applied to every cell.
-        spec: `_flag_spec()` output; read once and reused across a sweep.
+        spec: Unused; kept so callers may pass a cached spec. The spec is
+            per script and cached on `_flag_spec`, so it is looked up here.
 
     Returns:
         The argv list, algorithm name in its required position.
 
     Raises:
-        ValueError: If a config key is not a flag `examples/pusht.py`
-            accepts -- caught here rather than as an argparse error
-            repeated once per cell.
+        ValueError: If a config key is not a flag that script accepts --
+            caught here rather than as an argparse error repeated once per
+            cell.
     """
-    top, sub = spec if spec is not None else _flag_spec()
+    del spec
     task = dict(cell.get("task", {}))
+    script = task.pop("script")
     algorithm = cell.get("algorithm", "admm")
+    top, sub = _flag_spec(script)
+
     settings = {
         **fixed,
         **{k: v for k, v in cell.items() if k not in ("task", "algorithm")},
-        **{k: v for k, v in task.items()},
+        **task,
     }
+    if algorithm != "admm":
+        # `fixed:` is applied to every cell, so an ADMM-only knob set there
+        # would otherwise land on a flat command line.
+        settings = {k: v for k, v in settings.items() if k not in _ADMM_ONLY}
 
     pre: List[str] = []
     post: List[str] = []
@@ -201,16 +264,18 @@ def build_command(
         elif key in sub:
             target, takes_value = post, sub[key]
         else:
-            raise ValueError(
-                f"'{key}' is not an examples/pusht.py flag; check the sweep "
-                f"config. Known: {sorted(set(top) | set(sub))}"
-            )
+            # Not a typo -- `_check_fixed` has already rejected those.
+            # `fixed:` applies to every cell, but a 2D script genuinely has
+            # no --record and a 3D one no --animate, so a mixed sweep needs
+            # the inapplicable ones dropped. `describe_dropped` reports
+            # what, once, before the first cell runs.
+            continue
         if takes_value:
             target += [flag, str(value)]
         elif value:
             target.append(flag)
 
-    return [sys.executable, PUSHT, *pre, algorithm, *post]
+    return [sys.executable, script_path(script), *pre, algorithm, *post]
 
 
 def _gpu_memory() -> Optional[Tuple[int, int]]:
@@ -238,24 +303,24 @@ def _gpu_memory() -> Optional[Tuple[int, int]]:
     return int(free), int(total)
 
 
-def _await_gpu(
-    min_free_mib: int = 0, timeout: float = 120.0, poll: float = 0.5
-) -> Optional[int]:
+def _await_gpu(timeout: float = 120.0, poll: float = 0.5) -> Optional[int]:
     """Wait for the previous cell's GPU memory to come back.
 
-    A cell is its own process, so the driver reclaims on exit -- measured
-    at well under a second, since the process is only reaped after CUDA
-    teardown. This barrier exists for the cases where that reasoning does
-    not hold: a cell that crashed rather than exited, a viewer or notebook
-    someone left on the card, or a second sweep started by mistake. The
-    xArm6 ADMM cell peaks near 12 GB of 16, so a few hundred stray MiB is
-    the difference between a sweep and a column of Warp OOMs.
+    A cell is its own process, so the driver reclaims everything it held on
+    exit -- measured at well under a second, since the process is only
+    reaped after CUDA teardown. Waiting for the reading to *settle* (two
+    equal samples) is therefore enough: it catches the reclaim still being
+    in flight, and equally a cell that crashed rather than exited, or a
+    viewer someone left on the card.
+
+    No headroom threshold: the previous cell releases all of its memory,
+    so what the next one needs is not the launcher's business -- and a
+    fixed number would be wrong the moment the scene or sample count
+    changed.
 
     Args:
-        min_free_mib: Require at least this much free before returning. 0
-            waits only for the reading to settle.
-        timeout: Give up waiting after this long and run anyway -- an
-            unmet requirement is reported by the cell that fails, which is
+        timeout: Give up waiting after this long and run anyway -- a
+            genuine shortage is reported by the cell that fails, which is
             more informative than the launcher refusing to start.
         poll: Seconds between readings.
 
@@ -270,16 +335,15 @@ def _await_gpu(
     free, _ = reading
     previous = -1
     while time.time() < deadline:
-        # Settled (two equal readings) and enough headroom: go.
-        if free == previous and free >= min_free_mib:
+        if free == previous:
             return free
         previous = free
         time.sleep(poll)
         free = _gpu_memory()[0]
 
     print(
-        f"  warning: only {free} MiB free after waiting {timeout:.0f}s "
-        f"(wanted {min_free_mib} MiB); running anyway"
+        f"  warning: GPU memory still changing after {timeout:.0f}s "
+        f"({free} MiB free); running anyway"
     )
     return free
 
@@ -287,8 +351,8 @@ def _await_gpu(
 def _label(cell: Dict[str, Any]) -> str:
     """A short human-readable name for one cell, for progress output."""
     task = cell.get("task", {})
-    parts = [task.get("world", "3d")]
-    parts += [str(task[k]) for k in ("robot", "scene", "env") if k in task]
+    parts = [str(task.get("script", "?"))]
+    parts += [f"{k}={task[k]}" for k in sorted(task) if k != "script"]
     parts.append(str(cell.get("algorithm", "admm")))
     parts += [
         f"{k}={cell[k]}"
@@ -303,7 +367,6 @@ def run_sweep(
     fixed: Dict[str, Any],
     dry_run: bool = False,
     keep_going: bool = True,
-    min_free_mib: int = 0,
     gpu_timeout: float = 120.0,
 ) -> List[Dict[str, Any]]:
     """Run every combination, reporting progress and collecting outcomes.
@@ -314,18 +377,16 @@ def run_sweep(
         dry_run: Print the commands without running them.
         keep_going: Continue after a cell fails. On by default -- a sweep
             is long and one bad combination should not discard the rest.
-        min_free_mib: GPU memory required before a cell starts; see
-            `_await_gpu`.
-        gpu_timeout: How long to wait for it.
+        gpu_timeout: How long to wait for the previous cell's GPU memory;
+            see `_await_gpu`.
 
     Returns:
         One record per cell: its settings, command, exit status, duration,
         and the free GPU memory it started with.
     """
     records = []
-    spec = _flag_spec()
     for i, cell in enumerate(combos, 1):
-        cmd = build_command(cell, fixed, spec)
+        cmd = build_command(cell, fixed)
         print(f"\n[{i}/{len(combos)}] {_label(cell)}")
         print("  " + " ".join(cmd))
         if dry_run:
@@ -334,7 +395,7 @@ def run_sweep(
 
         # Between cells, not only after: this also catches memory held by
         # something that was not part of this sweep.
-        free = _await_gpu(min_free_mib, gpu_timeout)
+        free = _await_gpu(gpu_timeout)
         if free is not None:
             print(f"  {free} MiB free")
 
@@ -390,26 +451,71 @@ def _parse_overrides(overrides: Sequence[str]) -> Dict[str, Any]:
     return parsed
 
 
-def _check_fixed(fixed: Dict[str, Any]) -> None:
-    """Fail early if a `fixed:` key is not an `examples/pusht.py` flag.
+def _scripts(combos: Sequence[Dict[str, Any]]) -> List[str]:
+    """The distinct scripts a set of cells will invoke, in first-seen order."""
+    seen: Dict[str, None] = {}
+    for cell in combos:
+        seen.setdefault(cell.get("task", {}).get("script"), None)
+    return [s for s in seen if s]
+
+
+def _accepted(script: str) -> Set[str]:
+    """Every flag dest one script takes, before or after the algorithm."""
+    top, sub = _flag_spec(script)
+    return set(top) | set(sub)
+
+
+def _check_fixed(fixed: Dict[str, Any], scripts: Sequence[str]) -> None:
+    """Fail early if a `fixed:` key is no script's flag.
 
     Otherwise a typo surfaces as every cell of a long sweep failing
     identically, minutes apart, with an argparse error buried in each
-    subprocess's output.
+    subprocess's output. Checked against the union over the sweep's
+    scripts, not against one of them: a key only some accept is legitimate
+    (see `describe_dropped`), a key none accepts is a mistake.
 
     Args:
         fixed: The merged `fixed:` block and CLI overrides.
+        scripts: The scripts this sweep will invoke.
 
     Raises:
-        ValueError: If any key is unknown.
+        ValueError: If any key is no script's flag.
     """
-    top, sub = _flag_spec()
-    unknown = sorted(set(fixed) - set(top) - set(sub))
+    known: Set[str] = set()
+    for script in scripts:
+        known |= _accepted(script)
+    unknown = sorted(set(fixed) - known)
     if unknown:
         raise ValueError(
-            f"not examples/pusht.py flags: {unknown}. "
-            f"Known: {sorted(set(top) | set(sub))}"
+            f"not flags of any script in this sweep: {unknown}. "
+            f"Known: {sorted(known)}"
         )
+
+
+def describe_dropped(
+    fixed: Dict[str, Any], scripts: Sequence[str]
+) -> List[str]:
+    """Which `fixed:` keys each script cannot take, and so will not get.
+
+    A 2D script has no `--record` or `--warp`; a 3D one has no `--animate`.
+    Dropping them per cell is what lets one `fixed:` block serve a mixed
+    sweep -- but dropping anything silently is how a sweep quietly runs
+    something other than what was asked for, so this is printed once,
+    before the first cell.
+
+    Args:
+        fixed: The merged `fixed:` block and CLI overrides.
+        scripts: The scripts this sweep will invoke.
+
+    Returns:
+        One human-readable line per script that drops something.
+    """
+    lines = []
+    for script in scripts:
+        missing = sorted(set(fixed) - _accepted(script))
+        if missing:
+            lines.append(f"{script}: ignores {', '.join(missing)}")
+    return lines
 
 
 def _apply_only(
@@ -455,14 +561,6 @@ def main() -> None:
         help="Where to write the record of what ran.",
     )
     p.add_argument(
-        "--min-free-mib",
-        type=int,
-        default=0,
-        help="Wait for at least this much free GPU memory before each cell. "
-        "0 waits only for the reading to settle. The xArm6 ADMM cell peaks "
-        "near 12000.",
-    )
-    p.add_argument(
         "--gpu-timeout",
         type=float,
         default=120.0,
@@ -481,7 +579,7 @@ def main() -> None:
         dest="overrides",
         metavar="KEY=VALUE",
         help="Override a `fixed:` entry for this sweep only; repeatable. "
-        "Any examples/pusht.py flag works, e.g. --set steps=50 "
+        "Any flag of the sweep's scripts works, e.g. --set steps=50 "
         "--set record=false.",
     )
     args = p.parse_args()
@@ -496,9 +594,12 @@ def main() -> None:
         fixed["warp"] = True
     try:
         fixed.update(_parse_overrides(args.overrides))
-        _check_fixed(fixed)
+        _check_fixed(fixed, _scripts(combos))
     except ValueError as e:
         p.error(str(e))
+
+    for line in describe_dropped(fixed, _scripts(combos)):
+        print(f"note: {line}")
 
     if not combos:
         print("no cells to run (check the sweep config and --only filters)")
@@ -511,7 +612,6 @@ def main() -> None:
         fixed,
         dry_run=args.dry_run,
         keep_going=not args.stop_on_error,
-        min_free_mib=args.min_free_mib,
         gpu_timeout=args.gpu_timeout,
     )
     total = time.time() - t0

@@ -1,0 +1,257 @@
+"""Figures from a finished run's log -- 2D and 3D share every primitive.
+
+Nothing here knows how a run was produced: each function takes the task (or
+its scenario), the log dict, and a path. That is what lets one plotting
+routine serve every scene in `oim.utils.scenes` and every 2D scenario --
+obstacles, goal and footprint are read off the task, never hardcoded.
+
+matplotlib is imported inside the functions, not at module scope: the
+backend has to be selected before `pyplot` loads, and a run with plotting
+switched off should never pay for the import at all.
+"""
+
+from typing import Any, Dict
+
+import numpy as np
+
+from oim.objects import Box, Capsule, Circle, Polygon, rotate
+
+
+def obstacle_outline(obs: object, n: int = 48) -> np.ndarray:
+    """A closed polyline tracing an obstacle, for filling in matplotlib.
+
+    Args:
+        obs: Any `oim.objects.sdf` shape.
+        n: Samples around curved shapes.
+
+    Returns:
+        Vertices of shape (m, 2).
+
+    Raises:
+        TypeError: If the shape has no outline defined here.
+    """
+    if isinstance(obs, Circle):
+        ang = np.linspace(0, 2 * np.pi, n)
+        return np.asarray(obs.center) + obs.radius * np.stack(
+            [np.cos(ang), np.sin(ang)], axis=1
+        )
+    if isinstance(obs, Polygon):
+        return np.asarray(obs.vertices)
+    if isinstance(obs, Box):
+        he = np.asarray(obs.half_extents)
+        corners = (
+            np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=float) * he
+        )
+        return np.asarray(obs.center) + np.asarray(rotate(obs.angle, corners))
+    if isinstance(obs, Capsule):
+        a, b = np.asarray(obs.a), np.asarray(obs.b)
+        d = b - a
+        ang = np.arctan2(d[1], d[0])
+        t = np.linspace(-np.pi / 2, np.pi / 2, n // 2)
+        cap_a = a + obs.radius * np.stack(
+            [np.cos(t + ang + np.pi), np.sin(t + ang + np.pi)], axis=1
+        )
+        cap_b = b + obs.radius * np.stack(
+            [np.cos(t + ang), np.sin(t + ang)], axis=1
+        )
+        return np.vstack([cap_a, cap_b])
+    raise TypeError(f"no outline for {type(obs).__name__}")
+
+
+def footprint_world(verts: np.ndarray, pose: np.ndarray) -> np.ndarray:
+    """The object's footprint at a given SE(2) pose, in world coordinates."""
+    return np.asarray(pose[:2]) + np.asarray(rotate(float(pose[2]), verts))
+
+
+def _diagnostics_panel(ax_r, log: Dict[str, Any]) -> None:  # noqa: ANN001
+    """Primal/dual residual, rho, and realized-wrench-norm traces."""
+    ax_r.plot(log["primal_residual"], label="primal residual")
+    ax_r.plot(log["dual_residual"], label="dual residual")
+    ax_r.plot(log["rho"], label="rho")
+    ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
+    ax_r.set_xlabel("control step")
+    ax_r.legend()
+    ax_r.grid(alpha=0.3)
+    ax_r.set_title("ADMM diagnostics")
+
+
+def _sweep_footprints(ax, verts: np.ndarray, poses, stride: int) -> None:  # noqa: ANN001
+    """The object's footprint every `stride` steps, faded start to finish."""
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    n = len(poses)
+    for i in range(0, n, stride):
+        w = footprint_world(verts, poses[i])
+        ax.fill(
+            w[:, 0],
+            w[:, 1],
+            color=plt.cm.viridis(i / max(n - 1, 1)),
+            alpha=0.35,
+            zorder=2,
+        )
+    for pose, colour in ((poses[0], "tab:blue"), (poses[-1], "tab:red")):
+        w = footprint_world(verts, pose)
+        ax.fill(w[:, 0], w[:, 1], color=colour, alpha=0.9, zorder=3)
+
+
+def _goal_and_obstacles(ax, obstacles, goal, verts: np.ndarray) -> None:  # noqa: ANN001
+    """Everything in the scene that does not move."""
+    for obs in obstacles:
+        poly = obstacle_outline(obs)
+        ax.fill(poly[:, 0], poly[:, 1], color="0.4", zorder=1)
+    outline = footprint_world(verts, np.asarray(goal))
+    closed = np.vstack([outline, outline[:1]])
+    ax.plot(
+        closed[:, 0], closed[:, 1], color="green", lw=2, label="goal", zorder=4
+    )
+    ax.set_aspect("equal")
+    ax.grid(alpha=0.3)
+
+
+def _new_figure():  # noqa: ANN202
+    """A trajectory panel beside a diagnostics panel."""
+    import matplotlib  # noqa: PLC0415
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    return plt, plt.subplots(
+        1, 2, figsize=(13, 5.5), gridspec_kw={"width_ratios": [1.4, 1]}
+    )
+
+
+def plot_run_3d(
+    task: Any, log: Dict[str, Any], path: str, stride: int = 5
+) -> None:
+    """Draw the object's swept footprint, the pusher path, and diagnostics.
+
+    Obstacles, goal and footprint come from `task.object_model` rather than
+    a hardcoded constant, so this is correct for every scene.
+
+    Args:
+        task: A `PushT` with `object_model` populated (`clutter=True`).
+        log: The run log from `oim.sim3d.run`.
+        path: Where to write the PNG.
+        stride: Draw the footprint every this many control steps.
+    """
+    plt, (fig, (ax, ax_r)) = _new_figure()
+    verts = np.asarray(task.object_model.footprint.vertices)
+    _goal_and_obstacles(
+        ax, task.object_model.obstacles.shapes, task.object_model.goal, verts
+    )
+
+    poses = log["object_pose"]
+    _sweep_footprints(ax, verts, poses, stride)
+    pusher = log["robot_pos"]
+    ax.plot(
+        pusher[:, 0], pusher[:, 1], "k.-", ms=3, lw=1, label="pusher", zorder=5
+    )
+    ax.set_title(
+        f"{'reached' if log['reached'] else 'not reached'} in "
+        f"{len(poses) - 1} steps"
+    )
+    ax.legend(loc="upper left")
+    _diagnostics_panel(ax_r, log)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    print(f"saved plot to {path}")
+
+
+def _draw_scene_2d(ax, scenario: Any, verts: np.ndarray) -> None:  # noqa: ANN001
+    """Obstacles, goal and the scenario's own view window."""
+    _goal_and_obstacles(ax, scenario.obstacles, scenario.goal, verts)
+    ax.set_xlim(scenario.view[0], scenario.view[1])
+    ax.set_ylim(scenario.view[2], scenario.view[3])
+
+
+def plot_run_2d(
+    task: Any,
+    scenario: Any,
+    log: Dict[str, Any],
+    path: str,
+    stride: int = 5,
+) -> None:
+    """Draw the object's swept footprint, the robot path, and diagnostics.
+
+    Args:
+        task: A `PushT2D`.
+        scenario: The `Scenario` it was built from, for obstacles and view.
+        log: The run log from `oim.sim2d.run_2d`.
+        path: Where to write the PNG.
+        stride: Draw the footprint every this many control steps.
+    """
+    plt, (fig, (ax, ax_r)) = _new_figure()
+    verts = np.asarray(task.footprint.vertices)
+    _draw_scene_2d(ax, scenario, verts)
+
+    poses = log["object_pose"]
+    _sweep_footprints(ax, verts, poses, stride)
+    robot = log["robot_pos"]
+    ax.plot(
+        robot[:, 0], robot[:, 1], "k.-", ms=3, lw=1, label="robot", zorder=5
+    )
+    ax.set_title(
+        f"{scenario.name}  |  "
+        f"{'reached' if log['reached'] else 'not reached'} in "
+        f"{len(poses) - 1} steps"
+    )
+    ax.legend(loc="upper left")
+    _diagnostics_panel(ax_r, log)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    print(f"saved plot to {path}")
+
+
+def save_animation_2d(
+    task: Any,
+    scenario: Any,
+    log: Dict[str, Any],
+    path: str,
+    fps: int = 15,
+) -> None:
+    """Write an animated gif of a 2D run.
+
+    Worth having over the static plot: a swept-footprint figure shows
+    *where* the object went but not *when* it stalled, reversed, or got
+    shoved sideways by a contact that broke.
+
+    Args:
+        task: A `PushT2D`.
+        scenario: The `Scenario` it was built from.
+        log: The run log from `oim.sim2d.run_2d`.
+        path: Where to write the gif.
+        fps: Playback rate.
+    """
+    import matplotlib  # noqa: PLC0415
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+    from matplotlib import animation  # noqa: PLC0415
+
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    verts = np.asarray(task.footprint.vertices)
+    _draw_scene_2d(ax, scenario, verts)
+
+    poses, robot = log["object_pose"], log["robot_pos"]
+    (body,) = ax.fill([], [], color="tab:blue", alpha=0.85, zorder=3)
+    (trail,) = ax.plot([], [], "k-", lw=1, alpha=0.6, zorder=5)
+    (dot,) = ax.plot([], [], "ro", ms=5, zorder=6)
+    title = ax.set_title("")
+
+    def _update(i: int):  # noqa: ANN202
+        body.set_xy(footprint_world(verts, poses[i]))
+        trail.set_data(robot[: i + 1, 0], robot[: i + 1, 1])
+        dot.set_data([robot[i, 0]], [robot[i, 1]])
+        title.set_text(f"{scenario.name}  step {i}/{len(poses) - 1}")
+        return body, trail, dot, title
+
+    anim = animation.FuncAnimation(
+        fig, _update, frames=len(poses), blit=False, interval=1000 // fps
+    )
+    anim.save(path, writer=animation.PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"saved animation to {path}")

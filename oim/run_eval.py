@@ -1,6 +1,6 @@
 r"""Compute metrics over saved runs -- without re-running any experiment.
 
-`examples/pusht.py` produces one run file per run; `oim/run_launch.py`
+An `examples/` script produces one run file per run; `oim/run_launch.py`
 produces many. This reads them, derives every metric on the fly via
 `oim.utils.metrics`, and emits the paper's table: one block per task, one
 row per method inside it, and a final `Mean` block averaging each method
@@ -494,7 +494,7 @@ def main() -> None:
     p.add_argument(
         "--runs-dir",
         default=os.path.join(ROOT, "results", "runs"),
-        help="Directory of run files written by examples/pusht.py.",
+        help="Directory of run files written by the examples/ scripts.",
     )
     p.add_argument(
         "--group-by",

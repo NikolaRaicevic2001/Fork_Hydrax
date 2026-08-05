@@ -53,87 +53,63 @@ cd Object-Informed-Manipulation-MJX && uv sync
 ## Running
 
 Planar pushing: drive an object to an SE(2) goal past static obstacles.
-**Three programs, one per job**, so an expensive step never repeats for a
-cheap one:
+**One script per task** under `examples/`, and three programs, one per job,
+so an expensive step never repeats for a cheap one:
 
 | Program | Runs | Writes | Reads |
 | --- | --- | --- | --- |
-| [`examples/pusht.py`](examples/pusht.py) | one experiment | `results/runs/*.json` | — |
+| `examples/<task>.py` | one experiment | `results/runs/*.json` | — |
 | [`oim/run_launch.py`](oim/run_launch.py) | a sweep, one subprocess per cell | `results/sweeps/*.json` | the sweep config |
 | [`oim/run_eval.py`](oim/run_eval.py) | nothing | `results/eval/*.{json,md,tex}` | run files |
+
+### Tasks
+
+| `examples/` | Object → goal | In the way |
+| --- | --- | --- |
+| `clutter.py` | T, 45° turn | disc, box, triangle — and the only 3D scene with a point-mass embodiment |
+| `open_table.py` | T, 180° flip | nothing — the unobstructed baseline |
+| `single_obstacle.py` | T, 180° flip | one 0.1 m cube on the direct path |
+| `shelf_gap.py` | T, 180° flip | two shelves; the gap is exactly as wide as the T is long |
+| `ycb_clutter.py` | T, 180° flip | that cube plus spam can, sugar box, mustard bottle |
+| `icra_sign.py` | C, 90° turn | seven glyphs spelling *ICRA 2026*; the goal is the empty C slot |
+| `pusht2d_clutter.py` | T, 45° turn | 2D, 41 mm clearance |
+| `pusht2d_corridor.py` | T | 2D, a 15 mm horizontal channel |
+| `pusht2d_gate.py` | T | 2D, a 5 mm vertical slot, then a turn |
 
 ### Single runs
 
 ```bash
-# 3D xArm6: MPPI object block, 600 headless steps, mp4 + consensus overlay
-uv run python examples/pusht.py --robot xarm6 --record --warp admm \
-    --robot-opt mppi --object-opt mppi --headless --steps 300 --show-plans
+# 3D: 300 headless steps on the shelves, Warp rollouts, mp4 + consensus overlay
+uv run python examples/shelf_gap.py --warp --record admm --headless --steps 300 --show-plans
 
-# 2D gate: contact-action object block, animated, eager for a debugger
-uv run python examples/pusht.py --world 2d --env gate \
-    --animate admm --n-admm 12 --rho 20 --steps 100 --seed 3
+# 3D: the point mass instead of the arm, flat MPPI baseline
+uv run python examples/clutter.py --robot point mppi --headless --steps 200
+
+# 2D: animated, eager for a debugger
+uv run python examples/pusht2d_gate.py --animate --no-jit admm --n-admm 12 --rho 20
 ```
-
 
 | Flag | Default | |
 | --- | --- | --- |
 | ***before the algorithm*** | | |
-| `--config` | `oim/configs/{robot}.yaml` | Parameter file supplying every default below |
-| `--world {3d,2d}` | `3d` | `3d`: MJX contact, point or xArm6 robot, `admm`/`mppi`/`ps`. `2d`: analytic single-point contact, disc robot, `admm` only — same ADMM code, for separating algorithm bugs from simulator bugs |
+| `--robot` | scene's own | *3D:* embodiment, limited to those the scene has an MJCF for. Also picks the config: `oim/configs/{robot}.yaml` |
 | `--samples`, `--horizon` | from config | Rollouts per block, consensus horizon $H$ |
-| `--robot {point,xarm6}` | `point` | *3D:* embodiment. `xarm6` always loads an obstacle scene; the tabletop scenes are xArm6-only |
+| `--warp` | off | *3D:* [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, which Warp needs |
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
-| `--warp` | off | *3D:* experimental [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, since Warp allocates outside that pool and otherwise cannot build its CUDA graphs |
-| `--env {clutter,corridor,gate}` | `clutter` | *2D:* scenario (below) |
-| `--scene` | `clutter` | *3D:* MJCF layout ([below](#3d-scenes)). Recorded in the run identity, so `run_eval` groups on it |
-| `--contact-action` | off | *2D:* object block decides $[p, f_n, f_t]$, not the wrench ([below](#object-action-parameterization)) |
-| `--no-jit`, `--no-obstacles`, `--no-relocate`, `--animate`, `--no-plot` | off | *2D:* debug and output toggles |
-| ***after the algorithm*** | | |
-| `--robot-opt`, `--object-opt` | `mppi` | Inner solver per block: `mppi`/`cem`/`ps`/`cbo` |
-| `--n-admm` | from config | Max ADMM iterations per control step |
-| `--rho`, `--gamma` | from config | Penalty $\rho$, proximal weight $\gamma$ |
-| `--steps`, `--seed` | from config | Control steps (200 point / 300 xarm6), RNG seed |
-| `--headless` | off | No viewer; run `--steps` and save a run file |
-| `--show-plans` | off | *3D:* overlay both blocks' predicted object paths — **amber** what the object block intends ($x^{o*}$), **teal** what the robot block would produce; their gap is the primal residual, made spatial. Costs 1.7% of a control step |
-| *config only* | | No flag, but tunable in the YAML: $\epsilon_r$, $\epsilon_s$, noise annealing, per-method sampler parameters, execution timestep, goal tolerances, 2D physics |
-
-| `--env` | Stresses | Clearance |
-| --- | --- | --- |
-| `clutter` | routing *around* obstacles | 41 mm |
-| `corridor` | pushing *through* a narrow horizontal channel | 15 mm |
-| `gate` | a vertical slot, then rotating to the goal | 5 mm |
-
-#### 3D scenes
-
-The five tabletop scenes are conversions of the IsaacGym repo's
-`sim_task01`–`05`, keeping its coordinates, object dimensions and obstacle
-placements. All use the xArm6; all but `icra_sign` push the same T to the
-same goal, differing only in what is in the way.
-
-| `--scene` | Object → goal | In the way |
-| --- | --- | --- |
-| `clutter` | T, 45° turn | disc, box, triangle (this repo's own layout) |
-| `open_table` | T, 180° flip | nothing — the unobstructed baseline |
-| `single_obstacle` | T, 180° flip | one 0.1 m cube on the direct path |
-| `shelf_gap` | T, 180° flip | two 0.2×0.25×0.2 m shelves; the gap is exactly as wide as the T is long |
-| `ycb_clutter` | T, 180° flip | that cube plus spam can, sugar box, mustard bottle |
-| `icra_sign` | C, 90° turn | seven glyphs spelling *ICRA 2026*; the goal is the empty C slot |
-
-MJX collides meshes as convex hulls, so mesh obstacles are replaced by
-their measured bounding boxes (`ycb_clutter`'s YCB objects, `icra_sign`'s
-glyphs) and `icra_sign`'s pushed C is a three-box block letter.
-[`common.xml`](oim/models/xarm6_pusht_tabletop/common.xml) documents those
-and the two rigid re-origins (object start → the origin, tabletop → $z=0$).
-
-Every scene is written twice — MJCF for the simulator,
-[`oim/utils/scenes.py`](oim/utils/scenes.py) for the planner — and a
-disagreement does not crash, it just plans against a world that is not
-being simulated. `tests/test_scenes.py` checks the two against each other.
+| `--no-plot` | off | Skip the summary figure |
+| `--contact-action`, `--no-relocate`, `--no-obstacles`, `--no-jit`, `--animate` | off | *2D:* object-block parameterization, contact search, obstacles, eager mode, gif |
+| ***after the algorithm*** (`admm`, or *3D:* `mppi`/`ps`) | | |
+| `--steps`, `--seed` | from config | Control steps, RNG seed |
+| `--n-admm`, `--rho`, `--gamma` | from config | *`admm`:* max iterations, penalty $\rho$, proximal weight $\gamma$ |
+| `--robot-opt`, `--object-opt` | `mppi` | *3D `admm`:* inner solver per block — `mppi`/`cem`/`ps`/`cbo` |
+| `--headless` | off | *3D:* no viewer; run `--steps` and save a run file |
+| `--show-plans` | off | *3D `admm`:* overlay both blocks' predicted object paths — **amber** what the object block intends ($x^{o*}$), **teal** what the robot block would produce. Their gap is the primal residual, made spatial. Costs 1.7% of a control step |
+| *config only* | | No flag: $\epsilon_r$, $\epsilon_s$, noise annealing, per-method sampler parameters, execution timestep, goal tolerances, 2D physics |
 
 | Output | When |
 | --- | --- |
-| `results/runs/*.json` | `--headless` — settings, scene, per-step states/controls/wrenches/residuals/timings. Same keys and frames in both worlds; each carries a `schema` block |
-| `recordings/*.png` | always (2D), `--headless` (3D) — trajectory + residuals |
+| `results/runs/*.json` | *3D:* `--headless`, *2D:* always — settings, scene, per-step states/controls/wrenches/residuals/timings |
+| `recordings/*.png` | unless `--no-plot` — trajectory + residuals |
 | `recordings/*.gif` / `*.mp4` | `--animate` / `--record` |
 
 ### Sweeps
@@ -141,15 +117,16 @@ being simulated. `tests/test_scenes.py` checks the two against each other.
 ```yaml
 # oim/configs/run_launch_config.yaml
 sweep:
-  task: [{ world: 3d, robot: point }, { world: 3d, robot: xarm6 }]
+  task: [{ script: shelf_gap }, { script: clutter, robot: point }]
   algorithm: [admm, mppi]
   horizon: [5, 15, 25]
   seed: [0, 1, 2, 3, 4]
 fixed: { steps: 200, headless: true }
 ```
 
-Every combination runs as its own `examples/pusht.py` subprocess. Any axis
-may be any `pusht.py` flag; an empty list drops it.
+Every combination runs as its own subprocess. `task` names the script and
+any flags for it; every other axis may be any flag that script takes, and
+an empty list drops the axis.
 
 ```bash
 uv run python -m oim.run_launch                        # the whole product
@@ -164,14 +141,7 @@ uv run python -m oim.run_launch --warp --set steps=50  # override `fixed:`
 | `--only KEY=A,B` | keep only matching cells; repeatable |
 | `--set KEY=VALUE` | override `fixed:` for this sweep; unknown keys rejected up front |
 | `--warp` | shorthand for `--set warp=true` |
-| `--min-free-mib N` | require N MiB free before each cell (xArm6 ADMM peaks near 12000) |
 | `--stop-on-error` | abort on the first failure instead of skipping it |
-
-Cells run outermost axis first, so task 1 finishes entirely before task 2.
-Invalid cells are dropped (2D has no flat baselines; a flat baseline has no
-ADMM blocks). Each cell waits for the previous one's GPU memory. Failures
-are logged and skipped. `results/sweeps/*.json` records every cell's
-command, status and duration.
 
 ### Evaluation
 
@@ -204,14 +174,6 @@ uv run python -m oim.run_eval --pos-tol 0.02           # re-score, no re-running
 | `theta` | — | orientation error; not in the paper |
 | `f (Hz)` | $\bar{f}$ | wall-clock planning rate, from the recorded `compute_time` |
 | `T (s)` | $T$ | *simulated* time (`steps_run × dt`), machine-independent; a failed trial is credited the slowest time across every loaded run, so methods stay comparable |
-
-`Mean` is **unweighted over blocks** — each task counts once whatever its
-trial count — and skips blocks where a metric is undefined. Seeds are
-always trials within a cell, never a row.
-
-`results/runs_smoke/` holds a full 5-task × 2-method grid of 25-step runs
-for exercising the table without a GPU (`--runs-dir`). They are not
-results — see its README.
 
 
 ## Method
@@ -419,17 +381,22 @@ oim/
 │   └── run.py            build_admm_2d, run_2d
 │
 ├── sim3d/                MuJoCo drivers
+│   ├── build.py          task + controller + execution model, so a flat
+│   │                       baseline is built exactly like ADMM's
 │   ├── deterministic.py  run_interactive: viewer, replanning, recording
 │   ├── run.py            run_3d_admm / run_3d_plain: headless + logging
 │   ├── plan_overlay.py   both blocks' predicted paths, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
+├── experiment.py         Experiment + main(): the CLI, closed loop,
+│                           recording, run file and plot every
+│                           examples/ script shares
 ├── run_launch.py         sweep driver;  run_eval.py  post-hoc metrics
 ├── configs/              point.yaml, xarm6.yaml (defaults per robot);
 │                         run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
-└── utils/                scenes.py (the 3D scene registry), spline, video,
-                          results.py (run files), metrics.py
+└── utils/                scenes.py (the 3D scene registry), plotting.py,
+                          spline, video, results.py (run files), metrics.py
 ```
 
 One `ADMM.optimize(state, params)` call, top to bottom:

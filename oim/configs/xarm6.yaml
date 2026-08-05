@@ -1,10 +1,11 @@
 # Default parameters for the xArm6 robot.
 #
-# `examples/pusht.py` loads `oim/configs/{robot}.yaml` and uses every value
-# below as an argparse default, so a bare `uv run python examples/pusht.py
-# admm` runs exactly what is written here. Passing a flag overrides that one
-# value and nothing else -- the file is the baseline, the command line is the
-# exception.
+# Every `examples/` script loads `oim/configs/{robot}.yaml` and uses the
+# values below as argparse defaults, so a bare `uv run python
+# examples/<task>.py admm` runs exactly what is written here. Passing a flag
+# overrides that one value and nothing else -- the file is the baseline, the
+# command line is the exception. There is no flag to choose the file: it is
+# a property of `--robot`.
 #
 # That means two runs of the same algorithm are configured identically
 # unless you deliberately differ, and comparing two algorithms compares the

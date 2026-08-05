@@ -1,10 +1,10 @@
 # Sweep definition for `oim/run_launch.py`.
 #
 # `sweep` lists the values each axis takes; the launcher runs the full
-# cartesian product, invoking `examples/pusht.py` once per combination.
+# cartesian product, invoking one `examples/` script per combination.
 # `fixed` is passed to every run unchanged. Everything here maps onto a
-# real `examples/pusht.py` flag, so a sweep cell is reproducible by hand:
-# the launcher prints the exact command it ran.
+# real flag of the script it is sent to, so a sweep cell is reproducible by
+# hand: the launcher prints the exact command it ran.
 #
 # Axis order is the nesting order, outermost first -- with `task` first,
 # every algorithm/horizon/seed combination for task 1 finishes before task
@@ -15,26 +15,23 @@
 # next (`--min-free-mib N` to also demand headroom).
 #
 # Cells that make no sense are skipped automatically: the 2D world has no
-# flat baselines (`PushT2D` implements only `ConsensusTask`), and the 2D
-# scenarios/3D robots are selected by the `task` axis below.
+# flat baselines (`PushT2D` implements only `ConsensusTask`).
 
 sweep:
-  # Each task fixes a world and an embodiment or scenario. `world`/`robot`
-  # for 3D, `world`/`env` for 2D.
+  # `script` names the file under `examples/`; any other key in the entry
+  # becomes a flag for it. A 2D script takes no `robot`, and a
+  # single-embodiment 3D scene takes only its own.
   task:
-    # - { world: 3d, robot: point }
-    # - { world: 3d, robot: xarm6 }
-    # The five tabletop scenes. Uncomment to sweep them; each is its own
-    # `task` entry, so each gets its own run identity and its own row in
-    # `oim/run_eval.py`'s table.
-    - { world: 3d, robot: xarm6, scene: open_table }
-    - { world: 3d, robot: xarm6, scene: single_obstacle }
-    - { world: 3d, robot: xarm6, scene: shelf_gap }
-    - { world: 3d, robot: xarm6, scene: ycb_clutter }
-    - { world: 3d, robot: xarm6, scene: icra_sign }
-    # - { world: 2d, env: clutter }
-    # - { world: 2d, env: corridor }
-    # - { world: 2d, env: gate }
+    - { script: open_table }
+    - { script: single_obstacle }
+    - { script: shelf_gap }
+    - { script: ycb_clutter }
+    - { script: icra_sign }
+    # - { script: clutter, robot: xarm6 }
+    # - { script: clutter, robot: point }
+    # - { script: pusht2d_clutter }
+    # - { script: pusht2d_corridor }
+    # - { script: pusht2d_gate }
 
   algorithm: [admm, mppi]
 
@@ -49,12 +46,14 @@ sweep:
   n_admm: []
   seed: []
 
-# Applied to every cell. Any `examples/pusht.py` flag works here, and any
-# of them can be overridden for one sweep with `--set key=value` (or
-# `--warp`, shorthand for `--set warp=true`). Unknown keys are rejected
-# before the first cell runs, not once per cell.
+# Applied to every cell. Any flag of the scripts in this sweep works here,
+# and any of them can be overridden for one sweep with `--set key=value`
+# (or `--warp`, shorthand for `--set warp=true`). A key no script in the
+# sweep accepts is rejected before the first cell runs; a key only *some*
+# accept (a 2D script has no --record) is dropped for the rest, and the
+# launcher prints which.
 fixed:
-  steps: 200
+  steps: 1000
   headless: true # no viewer: a sweep cannot wait on a window
   record: true # an mp4 per cell; --set record=false to skip
   # warp: true          # MuJoCo Warp backend instead of JAX

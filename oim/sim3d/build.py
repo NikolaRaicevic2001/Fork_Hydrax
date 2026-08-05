@@ -1,0 +1,314 @@
+"""Construct the 3D world: task, controller, and execution model.
+
+Splitting this out from the runners means a flat baseline and an ADMM run
+are built from the *same* scene, horizon, sampler budget and execution
+model -- the only honest way to compare them. The 2D counterpart is
+`oim.sim2d.run.build_admm_2d`.
+
+Everything here reads its numbers from a config dict (`oim/configs/*.yaml`)
+rather than holding constants, so retuning a method is a config edit.
+"""
+
+from copy import deepcopy
+from typing import Any, Dict, Optional, Tuple
+
+import mujoco
+import numpy as np
+
+from oim.algs import (
+    ADMM,
+    CBO,
+    CEM,
+    MPPI,
+    PredictiveSampling,
+    WrenchConsensus,
+    make_object_shim,
+)
+from oim.tasks.pusht import PushT
+
+SUB_OPTIMIZERS = ["mppi", "cem", "ps", "cbo"]
+
+# Joint config (degrees) putting the xArm6's stick tip near the clutter
+# scene's block start; found via
+# oim/models/xarm6_pusht_clutter/verify_reach.py. Fallback only, and used
+# by `clutter` alone -- a scene with its own workspace (the tabletop
+# family) defines a "start" keyframe instead, not another entry here.
+XARM6_START_QPOS_DEG = [-15.43, 100.0, -185.36, 0.0, 60.0]
+
+# The point-mass pusher's own start: block at the origin, pusher just below
+# it. Two slides and a hinge for the block, then the pusher's x/y.
+POINT_START_QPOS = [0.0, 0.0, 0.0, -0.05, -0.06]
+
+
+def xarm6_start_qpos(mj_model: mujoco.MjModel) -> np.ndarray:
+    """Initial qpos for an xArm6 scene.
+
+    Reads the model's own "start" keyframe if it defines one -- every scene
+    besides the original clutter layout does, since each has a different
+    workspace -- falling back to `XARM6_START_QPOS_DEG` otherwise. Generic
+    over `mj_model.nq`, so it also covers the block's own qpos entries.
+
+    Args:
+        mj_model: The compiled scene.
+
+    Returns:
+        A full qpos vector.
+    """
+    key_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_KEY, "start")
+    if key_id >= 0:
+        return np.array(mj_model.key_qpos[key_id])
+    qpos = np.zeros(mj_model.nq)
+    qpos[:5] = np.radians(XARM6_START_QPOS_DEG)
+    return qpos
+
+
+def named_camera(
+    mj_model: mujoco.MjModel, name: str = "front"
+) -> Optional[str]:
+    """`name` if the model defines a camera by that name, else `None`.
+
+    `None` means the default free camera framing the whole scene. A scene
+    the free camera frames badly (the tabletop family, viewed from the side
+    by default) defines its own fixed camera instead of a special case in
+    the caller.
+
+    Args:
+        mj_model: The compiled scene.
+        name: Camera to look for.
+
+    Returns:
+        The camera name, or None.
+    """
+    if mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_CAMERA, name) >= 0:
+        return name
+    return None
+
+
+def build_sub_optimizer(
+    name: str,
+    task: object,
+    *,
+    plan_horizon: float,
+    num_knots: int,
+    spline: str,
+    seed: int,
+    num_samples: int,
+    sampler_cfg: Dict[str, Any],
+) -> object:
+    """Build one sub-optimizer by name, from the config's block for it.
+
+    Any `SamplingBasedController` works for either ADMM block -- the ADMM
+    layer only ever calls `sample_knots`/`update_params` -- so the object-
+    and robot-level optimizers are chosen independently. Each one's own
+    parameters come from `sampler_cfg[name]`, so the same numbers are used
+    whether a method runs as an ADMM block or as a flat baseline.
+
+    Args:
+        name: `mppi`, `cem`, `ps` or `cbo`.
+        task: The task to build against.
+        plan_horizon: Planning horizon in seconds.
+        num_knots: Spline knots.
+        spline: Spline type.
+        seed: RNG seed.
+        num_samples: Rollouts per iteration.
+        sampler_cfg: The config's `sampler` block.
+
+    Returns:
+        The controller.
+
+    Raises:
+        ValueError: If `name` is not a known sub-optimizer.
+    """
+    if name not in SUB_OPTIMIZERS:
+        raise ValueError(f"unknown sub-optimizer '{name}'")
+    common = dict(
+        plan_horizon=plan_horizon,
+        spline_type=spline,
+        num_knots=num_knots,
+        seed=seed,
+        num_samples=num_samples,
+    )
+    own = sampler_cfg[name]
+    if name == "mppi":
+        return MPPI(task, **own, **common)
+    if name == "cem":
+        return CEM(task, **own, **common)
+    if name == "ps":
+        return PredictiveSampling(task, **own, **common)
+    return CBO(task, **own, **common)
+
+
+def _execution_model(
+    task: PushT, robot: str, cfg: Dict[str, Any]
+) -> Tuple[mujoco.MjModel, mujoco.MjData]:
+    """A separate, finer MuJoCo model for *executing* the plan.
+
+    The planner rolls out at `planning_dt`; execution steps at
+    `exec_timestep` with more solver iterations, so the closed loop is not
+    graded against the same coarse integration it planned with.
+
+    Args:
+        task: The task whose `mj_model` to copy.
+        robot: Embodiment, selecting the start pose.
+        cfg: The config's `world3d` block.
+
+    Returns:
+        The execution model and its data, at the start pose.
+    """
+    mj_model = deepcopy(task.mj_model)
+    mj_model.opt.timestep = cfg["exec_timestep"]
+    mj_model.opt.iterations = cfg["exec_iterations"]
+    mj_model.opt.ls_iterations = cfg["exec_ls_iterations"]
+    mj_data = mujoco.MjData(mj_model)
+    if robot == "xarm6":
+        mj_data.qpos[:] = xarm6_start_qpos(mj_model)
+    else:
+        mj_data.qpos[:] = POINT_START_QPOS
+    return mj_model, mj_data
+
+
+def build_admm_3d(
+    scene: str,
+    robot: str,
+    cfg: Dict[str, Any],
+    *,
+    warp: bool,
+    horizon: int,
+    samples: int,
+    seed: int,
+    robot_opt: str,
+    object_opt: str,
+    n_admm: int,
+    rho: float,
+    gamma: float,
+) -> Tuple[PushT, ADMM, mujoco.MjModel, mujoco.MjData]:
+    """Task, ADMM controller, and execution model/data for the 3D world.
+
+    Args:
+        scene: A key of `oim.utils.scenes.SCENES`.
+        robot: `"point"` or `"xarm6"`.
+        cfg: A parsed `oim/configs/*.yaml`.
+        warp: Use the MuJoCo Warp rollout backend.
+        horizon: Consensus horizon H, in planning steps.
+        samples: Rollouts per block.
+        seed: RNG seed.
+        robot_opt: Sub-optimizer for the robot block.
+        object_opt: Sub-optimizer for the object block.
+        n_admm: Max ADMM iterations per control step.
+        rho: Initial penalty.
+        gamma: Proximal weight.
+
+    Returns:
+        `(task, controller, exec model, exec data)`.
+    """
+    w3, smp, adm = cfg["world3d"], cfg["sampler"], cfg["admm"]
+    plan_dt = w3["planning_dt"]
+
+    # "contact" (point-mass only) reads the real constraint force; "twist"
+    # infers the wrench from motion and converges worse, but is the only
+    # option for an articulated arm.
+    consensus_source = "contact" if robot == "point" else "twist"
+    task = PushT(
+        impl="warp" if warp else "jax",
+        clutter=True,
+        planning_dt=plan_dt,
+        robot=robot,
+        consensus_source=consensus_source,
+        env=scene,
+    )
+    # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
+    # and comparable to the task costs, so rho is a meaningful knob.
+    consensus = WrenchConsensus(
+        max_dual=2.0 * float(task.consensus_scale()[0]),
+        scale=task.consensus_scale(),
+    )
+    robot_optimizer = build_sub_optimizer(
+        robot_opt,
+        task,
+        plan_horizon=horizon * plan_dt,
+        num_knots=smp["robot_num_knots"],
+        spline=smp["robot_spline"],
+        seed=seed,
+        num_samples=samples,
+        sampler_cfg=smp,
+    )
+    object_optimizer = build_sub_optimizer(
+        object_opt,
+        make_object_shim(task, dt=plan_dt),
+        plan_horizon=horizon * plan_dt,
+        num_knots=horizon,
+        spline=smp["object_spline"],
+        seed=seed,
+        num_samples=samples,
+        sampler_cfg=smp,
+    )
+    ctrl = ADMM(
+        task,
+        robot_optimizer,
+        object_optimizer,
+        consensus,
+        n_admm=n_admm,
+        eps_r=adm["eps_r"],
+        eps_s=adm["eps_s"],
+        proximal_weight=gamma,
+        rho_init=rho,
+        noise_min=adm["noise_min"],
+        noise_kappa=adm["noise_kappa"],
+        noise_max=adm["noise_max"],
+    )
+    mj_model, mj_data = _execution_model(task, robot, w3)
+    return task, ctrl, mj_model, mj_data
+
+
+def build_flat_3d(
+    method: str,
+    scene: str,
+    robot: str,
+    cfg: Dict[str, Any],
+    *,
+    warp: bool,
+    horizon: int,
+    samples: int,
+    seed: int,
+    control_dt: float,
+) -> Tuple[PushT, object, mujoco.MjModel, mujoco.MjData]:
+    """A flat baseline on ADMM's own scene, horizon and sampler budget.
+
+    Deliberately the same task and execution model `build_admm_3d`
+    produces, so a comparison isolates the object-level hierarchy rather
+    than a difference in setup.
+
+    Args:
+        method: `mppi`, `cem`, `ps` or `cbo`.
+        scene: A key of `oim.utils.scenes.SCENES`.
+        robot: `"point"` or `"xarm6"`.
+        cfg: A parsed `oim/configs/*.yaml`.
+        warp: Use the MuJoCo Warp rollout backend.
+        horizon: Planning horizon, in control steps.
+        samples: Rollouts per iteration.
+        seed: RNG seed.
+        control_dt: Replanning period, also the planner's rollout timestep.
+
+    Returns:
+        `(task, controller, exec model, exec data)`.
+    """
+    w3, smp = cfg["world3d"], cfg["sampler"]
+    task = PushT(
+        impl="warp" if warp else "jax",
+        clutter=True,
+        planning_dt=control_dt,
+        robot=robot,
+        env=scene,
+    )
+    ctrl = build_sub_optimizer(
+        method,
+        task,
+        plan_horizon=horizon * control_dt,
+        num_knots=smp["robot_num_knots"],
+        spline=smp["robot_spline"],
+        seed=seed,
+        num_samples=samples,
+        sampler_cfg=smp,
+    )
+    mj_model, mj_data = _execution_model(task, robot, w3)
+    return task, ctrl, mj_model, mj_data

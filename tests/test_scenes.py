@@ -332,7 +332,7 @@ def test_start_pose_is_free_and_clear(scene: str) -> None:
     which no assertion about `single_obstacle` would ever have caught.
 
     Tabletop scenes only: `clutter` defines no keyframe and
-    examples/pusht.py falls back to its own tuned constant there.
+    oim/sim3d/build.py falls back to its own tuned constant there.
     """
     model = _load(scene, "xarm6")
     spec = SCENES[scene]
