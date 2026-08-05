@@ -30,21 +30,34 @@
        has a hole there. tests/test_scenes.py could not catch that
        divergence, since it only checks the outline both ways.
 
-       LETTERS ARE BOUNDING BOXES, NOT MESHES. The seven obstacle glyphs are
-       `fixed: True`, so only their footprint matters, and each is the
-       axis-aligned bounding box of its own `*_centered.ply` (scale 0.001)
-       from the source assets. That keeps the simulated geometry and the
-       planner's obstacle field (oim/utils/scenes.py) exactly equal, and
-       avoids MJX convex-mesh collision entirely. The row still reads as a
-       sign: glyphs are 0.15 m apart and ~0.07 m wide, so the gaps survive.
+       THE OBSTACLE GLYPHS ARE THE SOURCE'S OWN MESHES. Each is its
+       `*_centered.ply` (scale 0.001) converted to OBJ under assets/. MJX
+       collides a mesh as its convex hull, so `maxhullvert` caps that hull
+       and oim/utils/scenes.py carries the matching 2D hull. For letters
+       that hull is only 0.84-0.94x the bounding box it replaces -- a
+       letter's outline is mostly its bounding box once convexified -- so
+       the swap is worth far more visually than geometrically. It is still
+       worth making: the row now reads as a sign rather than as slabs.
 
-       The pushed C is a three-box block letter (see `c_shape_footprint` in
-       oim/objects/planar_pushing.py, which builds the matching outline).
-       That IS a simplification -- the source glyphs are smoothly curved --
-       but it keeps the bounding box, the 0.025 m thickness, the stroke
-       width and the single concavity, which are the properties that decide
-       how the letter can be pushed. -->
+       WHY THE PUSHED C IS STILL THREE BOXES, NOT A MESH. `alphabets/` has
+       no C at all, so there is nothing to load. But even with one, a mesh
+       would be *worse* here than boxes: MJX would collide it as its convex
+       hull, which for a C is a filled rectangle -- the notch, the single
+       feature the whole task turns on, would exist in the render and not
+       in the physics. Three boxes are a convex decomposition, so the notch
+       survives into contact. The same reasoning is why the T-block scenes
+       use boxes: tee_block.urdf is itself two boxes, not a mesh. -->
   <include file="common.xml"/>
+
+  <asset>
+    <!-- Paths are relative to *this* file, matching xarm6.xml's convention.
+         digit_2 and digit_2b share one mesh: "2026" has two 2s. -->
+    <mesh name="glyph_i" file="assets/glyph_i.obj" maxhullvert="32"/>
+    <mesh name="glyph_r" file="assets/glyph_r.obj" maxhullvert="32"/>
+    <mesh name="glyph_0" file="assets/glyph_0.obj" maxhullvert="32"/>
+    <mesh name="glyph_2" file="assets/glyph_2.obj" maxhullvert="32"/>
+    <mesh name="glyph_6" file="assets/glyph_6.obj" maxhullvert="32"/>
+  </asset>
 
   <worldbody>
     <!-- Same IsaacGym "table" actor as the T-block scenes, shifted by this
@@ -105,24 +118,38 @@
          four letters, then -0.1, -0.25, -0.4, -0.55 for the year, all
          shifted by +0.40. The gap at y = 0.85 is where the C goes.
 
-         `size` is half of each glyph's own bounding box (mm, scale 0.001):
-         I 24.3 x 100.0, R 71.3 x 100.0, 2 66.8 x 101.5, 0 67.9 x 103.0,
-         6 65.9 x 103.0. The A reuses R's box -- the source assets have no A
-         mesh, and R is the same font at the same cap height. -->
-    <geom class="tabletop_obstacle" name="letter_I" type="box"
-      size="0.01216 0.05000 0.0125" pos="0.2 1.00 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="letter_R" type="box"
-      size="0.03563 0.05000 0.0125" pos="0.2 0.70 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="letter_A" type="box"
-      size="0.03563 0.05000 0.0125" pos="0.2 0.55 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="digit_2" type="box"
-      size="0.03338 0.05076 0.0125" pos="0.2 0.30 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="digit_0" type="box"
-      size="0.03393 0.05152 0.0125" pos="0.2 0.15 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="digit_2b" type="box"
-      size="0.03338 0.05076 0.0125" pos="0.2 0.00 0.0125" euler="0 0 -90"/>
-    <geom class="tabletop_obstacle" name="digit_6" type="box"
-      size="0.03295 0.05152 0.0125" pos="0.2 -0.15 0.0125" euler="0 0 -90"/>
+         Six of the seven are the source's own `*_centered.ply`, converted
+         to OBJ and vendored under assets/. The A is not: `alphabets/` ships
+         0, 2, 6, I, O, R and S -- enough for the source's "IROS 2026" but
+         not for "ICRA" -- so it is built here from three boxes, which is
+         also what the pushed C is and for the same reason (see above). It
+         reuses R's bounding box, the same font at the same cap height. -->
+    <geom class="tabletop_obstacle" name="letter_I" type="mesh"
+      mesh="glyph_i" pos="0.2 1.00 0.0125" euler="0 0 -90"/>
+    <geom class="tabletop_obstacle" name="letter_R" type="mesh"
+      mesh="glyph_r" pos="0.2 0.70 0.0125" euler="0 0 -90"/>
+
+    <!-- The A: two legs and a crossbar, filling R's bounding box. Written
+         as three worldbody geoms in world coordinates rather than a body
+         with local offsets -- every other obstacle in every scene is a
+         worldbody geom, and tests/test_scenes.py collects them that way.
+         Yaw is the row's -90 degrees plus each leg's own 14.64 degree
+         slant, which is what makes the legs meet at the apex. -->
+    <geom class="tabletop_obstacle" name="letter_A_left" type="box"
+      size="0.0095 0.04920 0.0125" pos="0.2 0.5631 0.0125" euler="0 0 -104.64"/>
+    <geom class="tabletop_obstacle" name="letter_A_right" type="box"
+      size="0.0095 0.04920 0.0125" pos="0.2 0.5369 0.0125" euler="0 0 -75.36"/>
+    <geom class="tabletop_obstacle" name="letter_A_bar" type="box"
+      size="0.02494 0.00760 0.0125" pos="0.1825 0.55 0.0125" euler="0 0 -90"/>
+
+    <geom class="tabletop_obstacle" name="digit_2" type="mesh"
+      mesh="glyph_2" pos="0.2 0.30 0.0125" euler="0 0 -90"/>
+    <geom class="tabletop_obstacle" name="digit_0" type="mesh"
+      mesh="glyph_0" pos="0.2 0.15 0.0125" euler="0 0 -90"/>
+    <geom class="tabletop_obstacle" name="digit_2b" type="mesh"
+      mesh="glyph_2" pos="0.2 0.00 0.0125" euler="0 0 -90"/>
+    <geom class="tabletop_obstacle" name="digit_6" type="mesh"
+      mesh="glyph_6" pos="0.2 -0.15 0.0125" euler="0 0 -90"/>
   </worldbody>
 
   <sensor>
