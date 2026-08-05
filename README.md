@@ -98,6 +98,7 @@ uv run python examples/pusht2d_gate.py --animate --no-jit admm --n-admm 12 --rho
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
 | `--show-samples` | from config | *3D:* overlay the sampled candidate rollouts, as thin lines |
 | `--show-optimal` | from config | *3D:* overlay the chosen trajectory, as a thick line. Independent of `--show-samples`: either, both, or neither |
+| `--start`, `--goal` | random | *3D:* pose key from [`examples/poses/<task>.yaml`](examples/poses/) — five of each per task. Unset draws one (seeded by `--seed`); the run file records which |
 | `--no-plot` | off | Skip the summary figure |
 | `--contact-action`, `--no-relocate`, `--no-obstacles`, `--no-jit`, `--animate` | off | *2D:* object-block parameterization, contact search, obstacles, eager mode, gif |
 | ***after the algorithm*** (`admm`, or *3D:* `mppi`/`ps`) | | |
@@ -136,8 +137,13 @@ fixed: { steps: 200, headless: true }
 ```
 
 Every combination runs as its own subprocess. `task` names the script and
-any flags for it; every other axis may be any flag that script takes, and
-an empty list drops the axis.
+any flags for it; an empty list drops the axis, and an axis that is not
+sweepable is rejected up front rather than ignored.
+
+`start`/`goal` are axes too, drawn from [`examples/poses/`](examples/poses/):
+five starts and five goals per task, each checked clear of that scene's
+obstacles. Sweeping them varies the problem; sweeping `seed` alone only
+redraws the sampler's noise against a fixed one.
 
 ```bash
 uv run python -m oim.run_launch                        # the whole product
@@ -407,7 +413,8 @@ oim/
 │                         run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
 └── utils/                scenes.py (the 3D scene registry), plotting.py,
-                          spline, video, results.py (run files), metrics.py
+                          poses.py (examples/poses/*.yaml), spline, video,
+                          results.py (run files), metrics.py
 ```
 
 One `ADMM.optimize(state, params)` call, top to bottom:

@@ -67,6 +67,9 @@ _ADMM_ONLY = (
 
 # Sweep axes, in nesting order: earlier axes vary slowest, so every cell of
 # one task finishes before the next task starts.
+# Sweep axes, outermost first -- this is the nesting order, so everything
+# for task 1 finishes before task 2 starts. `start`/`goal` sit beside
+# `seed` because all three vary a trial rather than the method.
 _AXES = (
     "task",
     "algorithm",
@@ -75,6 +78,8 @@ _AXES = (
     "horizon",
     "samples",
     "n_admm",
+    "start",
+    "goal",
     "seed",
 )
 
@@ -203,7 +208,20 @@ def expand(sweep: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Returns:
         One dict per valid combination, in nesting order.
+
+    Raises:
+        ValueError: If the sweep names an axis that is not in `_AXES`.
+            Unknown axes used to be dropped in silence, so a sweep over a
+            misspelled -- or simply unlisted -- key ran as a single cell
+            and looked like it had worked.
     """
+    unknown = [a for a in sweep if a not in _AXES]
+    if unknown:
+        raise ValueError(
+            f"sweep axes {sorted(unknown)} are not sweepable "
+            f"(available: {', '.join(_AXES)}). A flag that is not an axis "
+            f"goes in `fixed:` instead."
+        )
     axes = [a for a in _AXES if sweep.get(a)]
     combos = []
     seen = set()

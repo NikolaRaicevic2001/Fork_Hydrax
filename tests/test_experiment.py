@@ -336,3 +336,42 @@ def test_unknown_script_is_rejected_with_the_available_ones() -> None:
     """A typo names the alternatives rather than failing per cell."""
     with pytest.raises(ValueError, match="no examples/nope.py"):
         script_path("nope")
+
+
+def test_pose_flags_are_3d_only_and_default_to_random() -> None:
+    """`--start`/`--goal` pick an initial condition, not a sampler knob.
+
+    Unset means "draw one", so re-running a task varies the problem rather
+    than only the noise. 2D scenarios carry their own start/goal, so the
+    flags would have nothing to read.
+    """
+    parser = build_parser(Experiment(world="3d", scene="shelf_gap"))
+    flags = _flags(parser)
+    for flag in ("start", "goal"):
+        assert flag in flags["top"]
+    args = parser.parse_args(["admm"])
+    assert args.start is None and args.goal is None
+    args = parser.parse_args(["--start", "3", "--goal", "2", "admm"])
+    assert (args.start, args.goal) == ("3", "2")
+
+    two_d = _flags(build_parser(Experiment(world="2d", env="gate")))
+    assert "start" not in two_d["top"] and "goal" not in two_d["top"]
+
+
+def test_poses_are_sweepable_axes() -> None:
+    """A pose sweep expands; it used to collapse to one cell in silence."""
+    combos = expand({
+        "task": [{"script": "shelf_gap"}],
+        "algorithm": ["admm"],
+        "start": ["1", "2", "3"],
+        "goal": ["1", "2"],
+    })
+    assert len(combos) == 6
+    pairs = {(c["start"], c["goal"]) for c in combos}
+    assert len(pairs) == 6
+
+
+def test_an_unsweepable_axis_is_rejected() -> None:
+    """`_AXES` was a silent whitelist: a typo ran as a single cell."""
+    with pytest.raises(ValueError, match="not sweepable"):
+        expand({"task": [{"script": "shelf_gap"}], "sed": [1, 2, 3]})

@@ -1,4 +1,4 @@
-from typing import Dict, Literal, Optional
+from typing import Dict, Literal, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -50,6 +50,7 @@ class PushT(Task, ConsensusTask):
         robot: Literal["point", "xarm6"] = "point",
         consensus_source: Literal["twist", "contact"] = "twist",
         env: str = "clutter",
+        goal: Optional[Sequence[float]] = None,
     ) -> None:
         """Load the MuJoCo model and set task parameters.
 
@@ -71,6 +72,11 @@ class PushT(Task, ConsensusTask):
             env: Which scene to load, by name from
                 `oim.utils.scenes.SCENES` (only meaningful with
                 `clutter=True`). Must support `robot`, or raises.
+            goal: Overrides the scene's own goal pose, world-frame SE(2)
+                `[x, y, theta]`. Used by `examples/poses/<task>.yaml` to
+                run one scene against several goals. The goal marker in
+                the MJCF is a mocap body, moved separately by
+                `oim.sim3d.build`; this sets what the *costs* aim at.
         """
         if robot not in ("point", "xarm6"):
             raise ValueError(f"robot must be 'point' or 'xarm6', got {robot!r}")
@@ -173,9 +179,15 @@ class PushT(Task, ConsensusTask):
             # the block/table, not its shape), chosen so the friction-cone
             # limit mu*m*g equals the block joints' `frictionloss` in the
             # MJCF for every scene's geoms.
+            # One goal pose feeds both blocks' costs; a pose file overrides
+            # it per run. Both must read the same array or the two ADMM
+            # blocks would negotiate a wrench toward different targets.
+            goal_pose = (
+                spec.goal if goal is None else jnp.asarray(goal, dtype=float)
+            )
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
-                goal=spec.goal,
+                goal=goal_pose,
                 footprint=spec.footprint(),
                 obstacles=spec.obstacles,
                 mu=0.4,
@@ -200,7 +212,7 @@ class PushT(Task, ConsensusTask):
             self.tip_target_z = float(mj_model.body("block").pos[2])
             self.q_pos, self.q_theta = 40.0, 10.0
             self.qf_pos, self.qf_theta = 500.0, 150.0
-            self.goal = spec.goal
+            self.goal = goal_pose
 
     # ------------------------------------------------------------------
     # Plain (non-ADMM) sampling-based MPC interface
@@ -280,6 +292,18 @@ class PushT(Task, ConsensusTask):
         if self.robot == "xarm6":
             return state.qpos[self.block_qpos_adr]
         return state.qpos[:3]
+
+    @property
+    def block_qpos_indices(self) -> jax.Array:
+        """Where the object's SE(2) pose sits in `qpos`, per embodiment.
+
+        The arm's five joints compile first, so the block lands at
+        `qpos[5:8]`; the point pusher's scene declares the block first, so
+        it is `qpos[:3]`. Read by anything writing a start pose in.
+        """
+        if self.robot == "xarm6":
+            return self.block_qpos_adr
+        return jnp.array([0, 1, 2])
 
     def _pusher_pos(self, state: mjx.Data) -> jax.Array:
         """World-frame (x, y) position of the pusher's contact point."""

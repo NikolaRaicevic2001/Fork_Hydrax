@@ -46,6 +46,15 @@ sweep:
   n_admm: []
   seed: []
 
+  # Initial conditions, from examples/poses/<task>.yaml -- five starts and
+  # five goals per task, every one checked clear of that scene's obstacles
+  # by tests/test_poses.py. Sweeping these varies the *problem*; sweeping
+  # `seed` only redraws the sampler's noise against a fixed one. Left
+  # empty, each run draws a pair (seeded by `seed`) and records which in
+  # its run file, so a sweep over seeds is already a sweep over poses.
+  start: []
+  goal: []
+
 # Applied to every cell. Any flag of the scripts in this sweep works here,
 # and any of them can be overridden for one sweep with `--set key=value`
 # (or `--warp`, shorthand for `--set warp=true`). A key no script in the

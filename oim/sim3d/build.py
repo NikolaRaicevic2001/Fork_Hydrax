@@ -10,7 +10,7 @@ rather than holding constants, so retuning a method is a config edit.
 """
 
 from copy import deepcopy
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import mujoco
 import numpy as np
@@ -139,7 +139,11 @@ def build_sub_optimizer(
 
 
 def _execution_model(
-    task: PushT, robot: str, cfg: Dict[str, Any]
+    task: PushT,
+    robot: str,
+    cfg: Dict[str, Any],
+    start: Optional[Sequence[float]] = None,
+    goal: Optional[Sequence[float]] = None,
 ) -> Tuple[mujoco.MjModel, mujoco.MjData]:
     """A separate, finer MuJoCo model for *executing* the plan.
 
@@ -151,6 +155,13 @@ def _execution_model(
         task: The task whose `mj_model` to copy.
         robot: Embodiment, selecting the start pose.
         cfg: The config's `world3d` block.
+        start: Object start pose, world-frame SE(2) `[x, y, theta]`,
+            written straight into the block's slide/hinge `qpos`. `None`
+            keeps the MJCF keyframe's own.
+        goal: Goal pose, moving the `goal` mocap marker to match what the
+            task's costs aim at. `None` keeps the MJCF's own. The costs
+            themselves come from `PushT(goal=...)`; this is the marker and
+            the goal-relative sensors that read off it.
 
     Returns:
         The execution model and its data, at the start pose.
@@ -164,6 +175,21 @@ def _execution_model(
         mj_data.qpos[:] = xarm6_start_qpos(mj_model)
     else:
         mj_data.qpos[:] = POINT_START_QPOS
+    if start is not None:
+        # The block's joints are two slides and a hinge anchored at the
+        # origin, so qpos *is* the world pose -- the same invariant
+        # `PushT._block_pose` relies on when it reads qpos back.
+        mj_data.qpos[np.asarray(task.block_qpos_indices)] = np.asarray(
+            start, dtype=float
+        )
+    if goal is not None:
+        goal = np.asarray(goal, dtype=float)
+        mj_data.mocap_pos[0][:2] = goal[:2]
+        half = 0.5 * float(goal[2])
+        mj_data.mocap_quat[0] = [np.cos(half), 0.0, 0.0, np.sin(half)]
+    # Populate xpos/site_xpos/sensordata for whatever reads them before the
+    # first step -- the initial log entry, and the goal-relative sensors.
+    mujoco.mj_forward(mj_model, mj_data)
     return mj_model, mj_data
 
 
@@ -182,6 +208,8 @@ def build_admm_3d(
     rho: float,
     gamma: float,
     consensus_alpha: float = 1.0,
+    start: Optional[Sequence[float]] = None,
+    goal: Optional[Sequence[float]] = None,
 ) -> Tuple[PushT, ADMM, mujoco.MjModel, mujoco.MjData]:
     """Task, ADMM controller, and execution model/data for the 3D world.
 
@@ -200,6 +228,9 @@ def build_admm_3d(
         gamma: Proximal weight.
         consensus_alpha: EMA weight on A^o/A^r across ADMM rounds (1.0 =
             raw). See `ADMM`.
+        start: Object start pose, or `None` for the scene's own.
+        goal: Object goal pose, or `None` for the scene's own. See
+            `examples/poses/`.
 
     Returns:
         `(task, controller, exec model, exec data)`.
@@ -218,6 +249,7 @@ def build_admm_3d(
         robot=robot,
         consensus_source=consensus_source,
         env=scene,
+        goal=goal,
     )
     # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
     # and comparable to the task costs, so rho is a meaningful knob.
@@ -260,7 +292,7 @@ def build_admm_3d(
         noise_max=adm["noise_max"],
         consensus_alpha=consensus_alpha,
     )
-    mj_model, mj_data = _execution_model(task, robot, w3)
+    mj_model, mj_data = _execution_model(task, robot, w3, start, goal)
     return task, ctrl, mj_model, mj_data
 
 
@@ -275,6 +307,8 @@ def build_flat_3d(
     samples: int,
     seed: int,
     control_dt: float,
+    start: Optional[Sequence[float]] = None,
+    goal: Optional[Sequence[float]] = None,
 ) -> Tuple[PushT, object, mujoco.MjModel, mujoco.MjData]:
     """A flat baseline on ADMM's own scene, horizon and sampler budget.
 
@@ -292,6 +326,9 @@ def build_flat_3d(
         samples: Rollouts per iteration.
         seed: RNG seed.
         control_dt: Replanning period, also the planner's rollout timestep.
+        start: Object start pose, or `None` for the scene's own.
+        goal: Object goal pose, or `None` for the scene's own. See
+            `examples/poses/`.
 
     Returns:
         `(task, controller, exec model, exec data)`.
@@ -303,6 +340,7 @@ def build_flat_3d(
         planning_dt=control_dt,
         robot=robot,
         env=scene,
+        goal=goal,
     )
     ctrl = build_sub_optimizer(
         method,
@@ -314,5 +352,5 @@ def build_flat_3d(
         num_samples=samples,
         sampler_cfg=smp,
     )
-    mj_model, mj_data = _execution_model(task, robot, w3)
+    mj_model, mj_data = _execution_model(task, robot, w3, start, goal)
     return task, ctrl, mj_model, mj_data

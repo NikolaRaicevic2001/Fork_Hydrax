@@ -1,0 +1,296 @@
+{
+  "schema": {
+    "indexing": "state[i] --robot_control[i]--> state[i+1]. State series (time, object_pose, object_velocity, robot_pos, robot_vel, qpos, qvel) have steps_run+1 entries, entry 0 being the initial condition. Input and wrench series (robot_control, wrench, wrench_consensus) have steps_run entries, entry i being what was applied over the step from state[i] to state[i+1].",
+    "frames": "object_pose is [x, y, theta] in the world frame; object_velocity is its time derivative [vx, vy, omega]. object_footprint_body is in the object's body frame -- rotate by theta and translate by [x, y] for world coordinates. Wrenches are [f_x, f_y, tau] in the world frame about the object's origin.",
+    "plans": "object_plan and robot_plan, present only when a run was asked for them, are the two ADMM blocks' predictions of the *same* object's trajectory over the horizon, made at that step: what the object block intends, and what the robot block's controls would produce. Shape (steps_run, H, 3), aligned with the input series -- entry i was computed from state[i]. Their divergence is the primal residual, resolved per timestep instead of summed into a scalar.",
+    "velocities": "In 2D both velocities are difference quotients of the logged positions, which is exact there (the engine integrates pose with forward Euler), so entry 0 is zero. In 3D object_velocity is MuJoCo's own qvel for the block, and robot_vel is a difference quotient of the contact point, which has no qvel entry."
+  },
+  "run": {
+    "world": "2d",
+    "task": "pusht2d_gate",
+    "robot": "disc",
+    "algorithm": "admm",
+    "robot_opt": "mppi",
+    "object_opt": "mppi",
+    "seed": 3,
+    "start_index": null,
+    "goal_index": null
+  },
+  "hyperparameters": {
+    "config": "point",
+    "steps": 3,
+    "samples": 64,
+    "horizon": 15,
+    "n_admm": 8,
+    "rho": 10.0,
+    "gamma": 0.1,
+    "consensus_alpha": null,
+    "control_dt": 0.05,
+    "goal_pos_tol": 0.05,
+    "goal_theta_tol": 0.05,
+    "contact_action": false,
+    "relocate_contact": true
+  },
+  "static": {
+    "goal": [
+      0.6200000047683716,
+      0.12999999523162842,
+      0.5235987901687622
+    ],
+    "object_footprint_body": [
+      [
+        -0.09000000357627869,
+        0.04500000178813934
+      ],
+      [
+        0.09000000357627869,
+        0.04500000178813934
+      ],
+      [
+        0.09000000357627869,
+        0.014999999664723873
+      ],
+      [
+        0.014999999664723873,
+        0.014999999664723873
+      ],
+      [
+        0.014999999664723873,
+        -0.10499999672174454
+      ],
+      [
+        -0.014999999664723873,
+        -0.10499999672174454
+      ],
+      [
+        -0.014999999664723873,
+        0.014999999664723873
+      ],
+      [
+        -0.09000000357627869,
+        0.014999999664723873
+      ]
+    ],
+    "object_limit_surface_d": [
+      0.12742100656032562,
+      0.12742100656032562,
+      2.123683214187622
+    ],
+    "object_wrench_limit": [
+      7.8480000495910645,
+      7.8480000495910645,
+      0.47088000178337097
+    ],
+    "obstacles": [
+      {
+        "type": "box",
+        "center": [
+          0.2800000011920929,
+          0.3400000035762787
+        ],
+        "half_extents": [
+          0.03500000014901161,
+          0.10000000149011612
+        ],
+        "angle": 0.0
+      },
+      {
+        "type": "box",
+        "center": [
+          0.2800000011920929,
+          -0.07999999821186066
+        ],
+        "half_extents": [
+          0.03500000014901161,
+          0.10000000149011612
+        ],
+        "angle": 0.0
+      },
+      {
+        "type": "circle",
+        "center": [
+          0.47999998927116394,
+          0.3799999952316284
+        ],
+        "radius": 0.04
+      },
+      {
+        "type": "polygon",
+        "vertices": [
+          [
+            0.5199999809265137,
+            -0.18000000715255737
+          ],
+          [
+            0.6399999856948853,
+            -0.18000000715255737
+          ],
+          [
+            0.5799999833106995,
+            -0.05999999865889549
+          ]
+        ]
+      }
+    ],
+    "scenario": "gate",
+    "robot": "disc",
+    "robot_radius": 0.012000000104308128,
+    "robot_max_speed": 0.6000000238418579
+  },
+  "dynamic": {
+    "time": [
+      0.0,
+      0.05000000074505806,
+      0.10000000149011612,
+      0.15000000596046448
+    ],
+    "object_pose": [
+      [
+        -0.05000000074505806,
+        0.12999999523162842,
+        0.0
+      ],
+      [
+        -0.05000000074505806,
+        0.12999999523162842,
+        0.0
+      ],
+      [
+        -0.05000000074505806,
+        0.12999999523162842,
+        0.0
+      ],
+      [
+        -0.05000000074505806,
+        0.12999999523162842,
+        0.0
+      ]
+    ],
+    "object_velocity": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "robot_pos": [
+      [
+        -0.11999999731779099,
+        0.05000000074505806
+      ],
+      [
+        -0.09129142016172409,
+        0.05827707424759865
+      ],
+      [
+        -0.085056833922863,
+        0.08483180403709412
+      ],
+      [
+        -0.09806516021490097,
+        0.11186480522155762
+      ]
+    ],
+    "robot_vel": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.5741715431213379,
+        0.16554147005081177
+      ],
+      [
+        0.12469172477722168,
+        0.5310946106910706
+      ],
+      [
+        -0.2601665258407593,
+        0.54066002368927
+      ]
+    ],
+    "robot_control": [
+      [
+        0.5741715431213379,
+        0.16554148495197296
+      ],
+      [
+        0.12469147145748138,
+        0.5310944318771362
+      ],
+      [
+        -0.28705596923828125,
+        0.5965403318405151
+      ]
+    ],
+    "wrench": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "wrench_consensus": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "primal_residual": [
+      1.1318533420562744,
+      1.0855019092559814,
+      1.1663130521774292
+    ],
+    "dual_residual": [
+      1.7035592794418335,
+      4.685935974121094,
+      2.851290702819824
+    ],
+    "rho": [
+      10.0,
+      10.0,
+      10.0
+    ],
+    "compute_time": [
+      64.4311612269994,
+      31.55268399399938,
+      0.3755841460006195
+    ]
+  }
+}
