@@ -1,0 +1,313 @@
+{
+  "config": "run_launch_config",
+  "fixed": {
+    "steps": 1000,
+    "headless": true,
+    "record": true,
+    "show_samples": true,
+    "show_optimal": true,
+    "warp": true
+  },
+  "runs": [
+    {
+      "cell": {
+        "task": {
+          "script": "open_table"
+        },
+        "algorithm": "admm",
+        "robot_opt": "mppi",
+        "object_opt": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/open_table.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "admm",
+        "--steps",
+        "1000",
+        "--headless",
+        "--robot-opt",
+        "mppi",
+        "--object-opt",
+        "mppi"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 201.37399911880493,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "open_table"
+        },
+        "algorithm": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/open_table.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "mppi",
+        "--steps",
+        "1000",
+        "--headless"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 67.72626423835754,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "single_obstacle"
+        },
+        "algorithm": "admm",
+        "robot_opt": "mppi",
+        "object_opt": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/single_obstacle.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "admm",
+        "--steps",
+        "1000",
+        "--headless",
+        "--robot-opt",
+        "mppi",
+        "--object-opt",
+        "mppi"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 223.9796302318573,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "single_obstacle"
+        },
+        "algorithm": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/single_obstacle.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "mppi",
+        "--steps",
+        "1000",
+        "--headless"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 65.59738111495972,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "shelf_gap"
+        },
+        "algorithm": "admm",
+        "robot_opt": "mppi",
+        "object_opt": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/shelf_gap.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "admm",
+        "--steps",
+        "1000",
+        "--headless",
+        "--robot-opt",
+        "mppi",
+        "--object-opt",
+        "mppi"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 219.54725813865662,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "shelf_gap"
+        },
+        "algorithm": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/shelf_gap.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "mppi",
+        "--steps",
+        "1000",
+        "--headless"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 72.17128920555115,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "ycb_clutter"
+        },
+        "algorithm": "admm",
+        "robot_opt": "mppi",
+        "object_opt": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/ycb_clutter.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "admm",
+        "--steps",
+        "1000",
+        "--headless",
+        "--robot-opt",
+        "mppi",
+        "--object-opt",
+        "mppi"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 216.96919322013855,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "ycb_clutter"
+        },
+        "algorithm": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/ycb_clutter.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "mppi",
+        "--steps",
+        "1000",
+        "--headless"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 72.38652086257935,
+      "gpu_free_mib_at_start": 3463
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "icra_sign"
+        },
+        "algorithm": "admm",
+        "robot_opt": "mppi",
+        "object_opt": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/icra_sign.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "admm",
+        "--steps",
+        "1000",
+        "--headless",
+        "--robot-opt",
+        "mppi",
+        "--object-opt",
+        "mppi"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 224.0205991268158,
+      "gpu_free_mib_at_start": 15676
+    },
+    {
+      "cell": {
+        "task": {
+          "script": "icra_sign"
+        },
+        "algorithm": "mppi",
+        "horizon": 16
+      },
+      "command": [
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/.venv/bin/python3",
+        "/home/nikolaraicevic/Workspace/Internal/Object-Informed-Manipulation-MJX/examples/icra_sign.py",
+        "--record",
+        "--show-samples",
+        "--show-optimal",
+        "--warp",
+        "--horizon",
+        "16",
+        "mppi",
+        "--steps",
+        "1000",
+        "--headless"
+      ],
+      "status": "ok",
+      "returncode": 0,
+      "seconds": 59.4364800453186,
+      "gpu_free_mib_at_start": 3463
+    }
+  ]
+}

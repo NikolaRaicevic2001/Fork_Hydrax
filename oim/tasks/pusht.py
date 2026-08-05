@@ -402,8 +402,14 @@ class PushT(Task, ConsensusTask):
 
         Angle between the tip site's z-axis and world -z (straight down --
         the pushing stick's intended pointing direction): 0 when vertical
-        and correctly oriented, pi when upside down. Identically zero for
-        `robot="point"` (no orientation DOF).
+        and correctly oriented, pi when upside down.
+
+        For `robot="point"` this is a constant pi, not zero: the pusher site
+        is unrotated, so its z-axis points *up* and there is no orientation
+        DOF that could change that. `w_tilt * pi` is therefore added
+        identically to every sample at every step, which cancels in the
+        cost differences every sampler here actually uses -- control is
+        unaffected, but a reported stage cost carries the offset.
 
         A previous roll/pitch-based formula measured deviation from the
         site's z-axis pointing *up*, so a correctly vertical, downward-

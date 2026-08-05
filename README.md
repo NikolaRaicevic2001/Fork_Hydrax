@@ -208,19 +208,23 @@ only through the contact wrench**, reconciled by ADMM.
 
 The object planner treats $w^o_t \triangleq [f_x, f_y, \tau]^\top$ as a
 *decision variable* rather than the outcome of complementarity constraints.
-For quasi-static planar pushing the **ellipsoidal limit surface** gives a
-closed-form model with no simulator in the loop:
+For quasi-static planar pushing the **ellipsoidal limit surface** closes the
+model with no simulator in the loop:
 
 ```math
-\dot{x}^o = D\,w^o, \quad
-D \triangleq \operatorname{diag}\big(\mu m g,\ \mu m g,\ c\,r\,\mu m g\big)^{-1},
-\quad x^o_{t+1} = x^o_t + \Delta t\, D\, w^o_t
+\dot{x}^o = D\,w^o, \qquad
+x^o_{t+1} = x^o_t + \Delta t\, D\, w^o_t, \qquad
+D^{-1} = \operatorname{diag}\big(\mu m g,\ \mu m g,\ c\,r\,\mu m g\big)
 ```
 
-with $\mu$ friction, $m$ mass, $c, r$ the limit-surface pressure coefficient
-and characteristic radius. $D^{-1}$ is the **friction-cone limit** — the
-largest wrench the support can transmit — reused throughout as the natural
-normalizer.
+| $\mu$ | $m$ | $g$ | $c$ | $r$ | $D^{-1}$ |
+| --- | --- | --- | --- | --- | --- |
+| 0.4 | 2.0 kg | 9.81 m/s² | 1.0 | 0.06 m | $(7.848,\ 7.848,\ 0.47088)$ |
+
+$D^{-1}$ is the **friction-cone limit** — the largest wrench the support can
+transmit. Every scene with an object model sets the block joints'
+`frictionloss` to it, so the simulated block and the analytic model share one
+friction budget. Reused throughout as the natural normalizer.
 
 ### Consensus problem
 
@@ -236,16 +240,14 @@ Over horizon $H$, with $\mathbf{Z} = \{z_t\}$ shared:
 \end{aligned}
 ```
 
-The realized wrench $\hat{w}^o_t$ is **not** a decision variable — it is
-whatever the rollout produces once $\mathbf{U}^r$ is applied. Splitting
-$\mathbf{W}^o$ from $\mathbf{U}^r$ through $z_t$ is what lets the two
-planners run independently. Extraction maps pull each block's estimate:
+| Extraction map | Value | Source |
+| --- | --- | --- |
+| $A^o(\mathbf{U}^o)_t$ | $w^o_t$ | read off the object block's decision variable |
+| $A^r(\mathbf{U}^r)_t$ | $\hat{w}^o_t$ | read off the robot block's MJX rollout |
 
-```math
-A^o(\mathbf{U}^o)_t = w^o_t \quad\text{(read off the decision variable)},
-\qquad
-A^r(\mathbf{U}^r)_t = \hat{w}^o_t \quad\text{(read off the rollout)} .
-```
+$\hat{w}^o_t$ is **not** a decision variable — it is whatever the rollout
+produces once $\mathbf{U}^r$ is applied. Splitting $\mathbf{W}^o$ from
+$\mathbf{U}^r$ through $z_t$ is what lets the two planners run independently.
 
 ### ADMM iteration
 
@@ -268,14 +270,23 @@ supplies the strong convexity non-convex ADMM convergence results require.
 > 3. &nbsp;&nbsp;&nbsp;&nbsp; **break** if $\lVert r\rVert \le \epsilon_r$ and $\lVert d\rVert \le \epsilon_s$
 > 4. Apply $u^r_0$, shift, observe $x_1$
 
-A `jax.lax.while_loop`, so the early exit survives `jit` and a control step
-compiles to one kernel.
+| $N_{\mathrm{ADMM}}$ | $\rho_0$ | $\gamma$ | $\epsilon_r = \epsilon_s$ | $y_{\max}$ | $H$ | samples |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8 | 10.0 | 0.1 | 0.5 | $2\mu m g = 15.696$ | 25 (xArm6), 15 (point) | 64 |
 
 ### Costs
 
 All SE(2) tracking shares one weighted squared distance
 ([`se2_distance_sq`](oim/objects/planar_pushing.py)), angle wrapped to
-$(-\pi,\pi]$: $d^2_w(x,g) = w_p\lVert p - p^g\rVert^2 + w_\theta \mathrm{wrap}(\theta-\theta^g)^2$.
+$(-\pi,\pi]$:
+
+```math
+d^2_w(x,g) = w_p\lVert p - p^g\rVert^2 + w_\theta \,\mathrm{wrap}(\theta-\theta^g)^2
+```
+
+**Object block** — $b_j(x^o)$ are the footprint's boundary samples in world
+frame, $\delta$ the clearance margin. The clearance term is geometric, not a
+simulator contact force: this block has no simulator.
 
 ```math
 \ell_o(x^o_t, w_t) = d^2_{q}(x^o_t, g)
@@ -284,54 +295,62 @@ $(-\pi,\pi]$: $d^2_w(x,g) = w_p\lVert p - p^g\rVert^2 + w_\theta \mathrm{wrap}(\
 \qquad \ell_f = d^2_{q_f}(x^o_H, g)
 ```
 
-$b_j(x^o)$ are the footprint's boundary samples in world frame, $\delta$ the
-clearance margin. The clearance term is geometric, not a simulator contact
-force — the object block has no simulator.
+**Robot block** — with $x^{o*}_t$ the object planner's nominal trajectory
+from this iteration (paper eq. 17).
 
 ```math
 J_r(x^r_t, u^r_t) = r_r \lVert u^r_t\rVert^2
 + \underbrace{d^2_{q}(x^o_t, g)}_{\text{goal}}
 + \underbrace{d^2_{q}(x^o_t, x^{o*}_t)}_{\ell_c\ \text{coupling}}
-+ \ell_r(x^r_t)
++ \ell_r ,
+\qquad J_{r,f} = d^2_{q_f}(x^o_H, g)
 ```
-
-with $x^{o*}_t$ the object planner's nominal trajectory from this iteration
-(paper eq. 17). The wrench consensus is dense but indirect; goal tracking is
-sparse but direct — both solvers carry it so tracking error cannot
-accumulate between the coarser points where the blocks actually agree.
 
 ```math
 \ell_r = \underbrace{w_{ee}\max\big(\lVert p^{ee}_t - p^o_t\rVert^2 - r_0^2,\ 0\big)
 + w_{\text{align}} \psi_{\text{align}}}_{\text{both worlds}}
 + \underbrace{w_{\text{tilt}} \psi_{\text{tilt}} + w_{z}(z^{ee}_t - z^\ast)^2}_{\text{3D only}}
-+ \underbrace{w_{\text{obs}} \textstyle\sum_j \max(\delta - \mathrm{sdf}(p^{ee}_t), 0)^2}_{\text{2D only}}
++ \underbrace{w^r_{\text{obs}} \max(\delta - \mathrm{sdf}(p^{ee}_t), 0)^2}_{\text{2D only}}
 ```
 
 ```math
 \psi_{\text{align}} = \max\big(\gamma_0 - \cos\angle(p^o_t - p^{ee}_t,\ p^{o*}_t - p^o_t),\ 0\big),
-\qquad \psi_{\text{tilt}}(R) = \sqrt{\varrho^2 + \varphi^2}
+\qquad \psi_{\text{tilt}} = \arccos\big({-R^{ee}_{33}}\big)
 ```
 
 The approach term pulls the pusher in but goes slack inside $r_0$;
-$\psi_{\text{align}}$ keeps it *behind* the object relative to the goal.
-Same weights on both sides ($w_{ee}=20$, $r_0=0.05$, $w_{\text{align}}=5$,
-$\gamma_0=\cos(\pi/6)$). The 3D-only terms shape an end-effector *pose*
-(stick vertical, at block mid-height), which a disc robot does not have;
-conversely 2D needs an explicit robot–obstacle term that MJX contact
-provides for free. $w_{\text{tilt}}$, $w_z$ and the 2D obstacle weight are
+$\psi_{\text{align}}$ keeps it *behind* the object relative to the goal;
+$\psi_{\text{tilt}}$ is the angle between the stick's own $z$-axis and world
+$-z$, zero when it points straight down.
+
+| Symbol | Term | 3D (xArm6) | 2D (disc) |
+| --- | --- | --- | --- |
+| $q_p,\ q_\theta$ | goal and coupling tracking, both blocks | 40, 10 | 40, 10 |
+| $q_{f,p},\ q_{f,\theta}$ | terminal tracking, both blocks | 500, 150 | 500, 150 |
+| $r_o$ | object effort | 0.01 | 0.01 |
+| $w_{\text{obs}},\ \delta$ | object clearance hinge | 60000, 0.015 m | 60000, 0.015 m |
+| $r_r$ | robot effort | 0.05 | 0.05 |
+| $w_{ee},\ r_0$ | approach, slack inside $r_0$ | 40, 0.02 m | 20, 0.05 m |
+| $w_{\text{align}},\ \gamma_0$ | stay behind the object | 15, $\cos(\pi/12)$ | 5, $\cos(\pi/6)$ |
+| $w_{\text{tilt}}$ | stick vertical | 30 | no orientation to shape |
+| $w_z,\ z^\ast$ | tip at block mid-height | 8, block resting $z$ | no height to shape |
+| $w^r_{\text{obs}}$ | robot clearance hinge | MJX contact instead | 60000 |
+
+The object block is identical in both worlds; only $\ell_r$ differs, and only
+where the embodiment does. $w_{\text{tilt}}$, $w_z$ and $w^r_{\text{obs}}$ are
 not given numeric values in the paper.
 
 ### Object action parameterization
 
-By default the object block's decision variable *is* the consensus
-variable: it samples $w^o_t$ directly, box-bounded at $|w^o_t| \le D^{-1}$.
-That bounds the wrench's *magnitude* but not its *direction* — the sampler
-may still propose a pure torque or a pulling force.
+By default the object block's decision variable *is* the consensus variable:
+it samples $w^o_t$ directly, box-bounded (see implementation notes). That
+bounds the wrench's *magnitude* but not its *direction* — the sampler may
+still propose a pure torque or a pulling force.
 
 A task may instead decide a **contact action**
-$a_t = [p_x, p_y, f_n, f_t]$ — where to push in the body frame, and with
-what normal/tangential force — and derive the wrench through the contact
-Jacobian, making every reachable $A^o$ realizable by construction:
+$a_t = [p_x, p_y, f_n, f_t]$ — where to push in the body frame, and with what
+normal/tangential force — and derive the wrench through the contact Jacobian,
+making every reachable $A^o$ realizable by construction:
 
 ```math
 A^o_t = J_c(p_t)^\top f = \begin{bmatrix} f \\ (p^{c}_t - p^o_t) \times f \end{bmatrix},
@@ -339,20 +358,21 @@ A^o_t = J_c(p_t)^\top f = \begin{bmatrix} f \\ (p^{c}_t - p^o_t) \times f \end{b
 \quad p_t \in \partial\mathcal{O},\ 0 \le f_n \le f_{\max},\ |f_t| \le \mu_c f_n
 ```
 
-$z$ is still the 3-vector wrench, so nothing else in the ADMM layer changes;
-only $\dim(a) = 4 \ne \dim(z) = 3$. Sampling must respect the geometry:
-points are perturbed, re-projected onto the boundary, then rejection-
-filtered on normal alignment (an unfiltered step can hop to the opposite
-face, reversing the wrench). That makes the proposal local, so a separate
-CEM search over the whole boundary re-chooses the contact point each step —
-without it the block can slide along one face but never decide to push from
-elsewhere, which is what routing around an obstacle requires.
+$z$ is still the 3-vector wrench, so nothing in the ADMM layer changes; only
+$\dim(a) = 4 \ne \dim(z) = 3$. Sampling must respect the geometry: points are
+perturbed, re-projected onto the boundary, then rejection-filtered on normal
+alignment (an unfiltered step can hop to the opposite face, reversing the
+wrench). That makes the proposal local, so a separate CEM search over the
+whole boundary re-chooses the contact point each step — without it the block
+can slide along one face but never decide to push from elsewhere, which is
+what routing around an obstacle requires.
 
-**Neither task uses it by default** (`--contact-action` opts in): where the
-robot touches is the robot block's concern, and making the object planner
-choose it duplicates that job in the wrong subproblem. Tasks opt in via
+**2D only, and off by default** (`--contact-action` opts in): where the robot
+touches is the robot block's concern, and making the object planner choose it
+duplicates that job in the wrong subproblem. A task opts in by overriding
 `object_action_dim`, `object_action_bounds`, `object_action_to_consensus`,
-`project_object_action`, `sample_object_actions`, `initial_object_action`.
+`project_object_action`, `sample_object_actions`, `initial_object_action`; the
+3D `PushT` overrides none of them and has no flag.
 
 ### Implementation notes
 
@@ -361,14 +381,18 @@ Where the implementation departs from the formulation above.
 | | What, and why |
 | --- | --- |
 | **Penalty normalization** | Penalty and residuals are divided by $D^{-1}$ before squaring. Unnormalized, ~10 N forces give ~10² against task costs of ~1, and the robot optimizes wrench matching instead of reaching the object. Identical diagonal preconditioning on both blocks, so the fixed point is unchanged and $\rho, \epsilon_r, \epsilon_s$ become scale-free. |
+| **$A^r$ is inferred, not read** | Default `consensus_source="twist"` inverts the limit surface, $\hat{w}^o = D^{-1}\dot{x}^o$, rather than reading MJX's contact force. Backend- and embodiment-agnostic, and continuous through contact breaks, where the literal force is exactly zero and chatters. `"contact"` reads `qfrc_constraint` literally, matching the paper, but is only valid for the point pusher — an arm's contact appears as $J^\top f$ spread across its joints. |
+| **$A^r$ clipped to $D^{-1}$** | A rigid-body solver reports up to ~16× the friction-cone limit at contact onset. Unclipped, that outlier drags $z$ outside the object block's own feasible set, which it can then never match, and the disagreement outlives the spike by several steps. |
+| **Consensus smoothed across rounds** | $z$ and both residuals are computed from an EMA of $A^o, A^r$ with weight `consensus_alpha`, re-zeroed every control step. Each round's $A$ is one noisy resampling estimate, not a converged proposal, so raw disagreement is dominated by resampling variance. Ships at 1.0 (raw, as the paper); 0.2 measured better. |
+| **Object bound is not $D^{-1}$** | `object_action_bounds` returns $\pm D^{-1}$ in physical units, but `object_action_to_consensus` then multiplies by `action_scale` $= \tfrac12 D^{-1}$, which assumes a unit sample. The two conventions disagree, so the realized box is $\pm\tfrac12 (D^{-1})^2$ — 3.92× the friction-cone limit in force, 0.235× in torque. |
 | **Penalty is not $\Delta t$-weighted** | Both blocks compute $\Delta t\,\ell + \tfrac{\rho}{2}\lVert\cdot\rVert^2$. They agree, so the fixed point is well defined, but the penalty's effective weight scales as $1/\Delta t$ — changing the planning timestep silently re-tunes $\rho$. |
-| **Residuals unnormalized by horizon** | $\lVert r\rVert$ is a Frobenius norm over $(2H,3)$, not an RMS, so it grows like $\sqrt{2H}$. At $H=15$ residuals are $O(1)$, so $\epsilon_r = \epsilon_s = 0.5$; the paper's $0.05$ is unreachable here and the early exit would never fire. |
+| **Residuals unnormalized by horizon** | $\lVert r\rVert$ is a Frobenius norm over $(2H,3)$, not an RMS, so it grows like $\sqrt{2H}$. Residuals are $O(1)$ at both horizons in use, so $\epsilon_r = \epsilon_s = 0.5$; the paper's $0.05$ is unreachable here and the early exit would never fire. |
 | **Variance annealing additive, and off** | Most samplers expose no mutable covariance, so the wrappers *add* $\mathrm{clip}(\kappa\lVert r\rVert, \sigma_{\min}, \sigma_{\max})$ rather than replacing $\Sigma_u$. The upper clip is required ($\kappa\lVert r\rVert$ is otherwise a positive feedback loop), and since $\lVert r\rVert$ does not converge here the clip binds permanently — so $\kappa = 0$. Measured over 600 steps at identical seed: final position error 4.65 with annealing on, 2.01 off. |
-| **Direct wrench box-bounded** | Clamped to $\pm D^{-1}$, so the block cannot propose a wrench the support could not transmit. This is the half of the friction-cone constraint that survives sampling the wrench rather than a contact action. |
-| **$\rho$ and $\lVert r\rVert$ persist** | `rho_init` is only the $t=0$ value; both are carried in the policy parameters and never reset, so they drift over a run. |
+| **$\rho$ and $\lVert r\rVert$ persist** | `rho_init` is only the $t=0$ value; both are carried in the policy parameters and never reset, so they drift over a run. $\lVert d\rVert$ is re-initialized to $\infty$ each step, so the first iteration never exits early. |
 | **Dual anti-windup** | Duals clipped to $\pm y_{\max}$. This is why the $z$-update keeps the dual terms: $\sum_i y^i = 0$ is an ADMM invariant that would make $z = \tfrac12(A^o + A^r)$ equivalent, but clipping breaks it. |
-| **Warm-start tail** | The shift zero-fills the vacated slot for $z, y^o, y^r$ and a direct-wrench block; a structured action space repeats the last value instead, since zero need not be feasible there (a zero contact point is the object's origin, not on its boundary). |
+| **Warm start is not a pure shift** | $z, y^o, y^r$ and a direct-wrench object block shift by one and zero-fill the tail; a structured action space repeats the last value instead, since zero need not be feasible there (a zero contact point is the object's origin, not on its boundary). The robot mean is re-interpolated onto shifted spline knot times, not shifted. |
 | **Horizons** | The formulation permits $H^c \le \min(H^o, H^r)$; the implementation enforces $H^o = H^r = H^c$. |
+| **Tilt is constant for the 3D point pusher** | $\psi_{\text{tilt}}$ reads the trace site's rotation, which for the point pusher never changes, so $\ell_r$ carries a constant $30\pi \approx 94.2$. It cancels in every sampler's cost differences, so control is unaffected, but reported costs are offset. |
 
 ## Code layout
 
@@ -426,46 +450,6 @@ One `ADMM.optimize(state, params)` call, top to bottom:
 | Robot block | `RobotSubproblem` → `RobotRollout.step` | samples $\mathbf{U}^r$, rolls out in MJX **or** 2D, returns $A^r$ |
 | Consensus + duals | `ConsensusSpace` | $z, y^o, y^r$, normalized by `consensus_scale()` |
 | Convergence | `jax.lax.while_loop` | $\lVert r\rVert, \lVert d\rVert$; adapt $\rho$; exit test |
-
-Two invariants make that work:
-
-- **Any sampler fits either block.** Both subproblems only call
-  `sample_knots`/`update_params`, which is what makes `--robot-opt` and
-  `--object-opt` interchangeable.
-- **Only `RobotRollout` is simulator-specific.** `ADMM`, `ConsensusSpace`,
-  `ObjectSubproblem` and all of `objects/` are shared verbatim, so 2D is not
-  a second implementation. The consensus penalty is owned by
-  `ConsensusSpace` and applied by the ADMM layer to *both* blocks; tasks
-  cannot add their own (`robot_running_cost` receives no $z, y, \rho$), so
-  the blocks cannot drift into scoring $z$ differently.
-
-## Extending
-
-A plain sampling-based MPC problem
-$\min_u \sum_t \ell(x_t,u_t) + \phi(x_{T+1})$ s.t. $x_{t+1} = f(x_t,u_t)$
-needs a MuJoCo model plus `running_cost` and `terminal_cost`. For ADMM, mix
-in [`ConsensusTask`](oim/task_base.py):
-
-```python
-class MyTask(Task, ConsensusTask):
-    consensus_dim              # dimension of z
-    consensus_scale()          # characteristic magnitude of z (normalizer)
-    object_dynamics()          # closed-form x^o_{t+1} = f^o(x^o_t, w_t)
-    object_running_cost()      # l_o          object_terminal_cost()   # l_f
-    object_state_from_robot()  # pull x^o out of the robot state
-    realized_consensus()       # A^r, read off the rollout
-    robot_running_cost()       # J_r = l_o + l_r + l_c  (no ADMM penalty!)
-    robot_terminal_cost()
-```
-
-A new **2D scenario** is plain [`oim/objects/`](oim/objects/) primitives —
-no MJCF, no MuJoCo:
-
-```python
-task = PushT2D(footprint=t_shape_footprint(), goal=[0.5, 0.48, 0.785], obstacles=[Circle(center=[0.08, 0.32], radius=0.04)])
-ctrl, params = build_admm_2d(task, n_admm=6)
-log = run_2d(task, ctrl, params, robot_pos0=(0.0, -0.13), max_steps=200)
-```
 
 ## Citation
 

@@ -25,8 +25,8 @@ sweep:
     - { script: open_table }
     - { script: single_obstacle }
     - { script: shelf_gap }
-    # - { script: ycb_clutter }
-    # - { script: icra_sign }
+    - { script: ycb_clutter }
+    - { script: icra_sign }
     # - { script: clutter, robot: xarm6 }
     # - { script: clutter, robot: point }
     # - { script: pusht2d_clutter }
@@ -62,7 +62,7 @@ sweep:
 # accept (a 2D script has no --record) is dropped for the rest, and the
 # launcher prints which.
 fixed:
-  steps: 100
+  steps: 1000
   headless: true # no viewer: a sweep cannot wait on a window
   record: true # an mp4 per cell; --set record=false to skip
   # Trajectory overlay, composited into each cell's mp4. Works for every
