@@ -36,9 +36,9 @@ world2d:
   f_max: 4.0 # cap on the normal contact force
 
 sampler:
-  num_samples: 64 # higher exhausts an 11 GB GPU for the arm; 96 measured
-  # not to help reliably anyway
-  horizon: 25 # consensus horizon H, in steps of planning_dt
+  num_samples: 96 # was 64; 96 previously measured not to help reliably,
+  # retried after the cost-function/tilt retune
+  horizon: 35 # was 25; consensus horizon H, in steps of planning_dt
   robot_num_knots: 4
   robot_spline: linear
   object_spline: zero # the object block always uses num_knots = horizon
