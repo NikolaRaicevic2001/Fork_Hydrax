@@ -10,12 +10,14 @@ are that check.
 
 import math
 
+import jax.numpy as jnp
 import mujoco
 import numpy as np
 import pytest
+from scipy.spatial import ConvexHull
 
 from oim import ROOT
-from oim.objects import Box, Circle
+from oim.objects import Box, Circle, Polygon
 from oim.utils.scenes import SCENES
 
 # Worldbody geoms that are scenery, not obstacles.
@@ -68,6 +70,84 @@ def _load(scene: str, robot: str) -> mujoco.MjModel:
 def _yaw(quat: np.ndarray) -> float:
     """Rotation about z encoded by a wxyz quaternion, in radians."""
     return float(2.0 * math.atan2(quat[3], quat[0]))
+
+
+def _world_footprint(model: mujoco.MjModel, geom) -> np.ndarray:  # noqa: ANN001
+    """A mesh geom's vertices, projected to the world xy plane.
+
+    MuJoCo re-frames a mesh on its centre of mass and principal axes at
+    compile time, compensating `geom_pos`/`geom_quat`, so the authored
+    numbers no longer describe where the mesh sits. Reading the vertices
+    back through forward kinematics is the only description that stays
+    true, and it is what the simulator collides.
+    """
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    mesh_id = model.geom_dataid[geom.id]
+    adr, num = model.mesh_vertadr[mesh_id], model.mesh_vertnum[mesh_id]
+    verts = model.mesh_vert[adr : adr + num]
+    rot = data.geom_xmat[geom.id].reshape(3, 3)
+    return (verts @ rot.T + data.geom_xpos[geom.id])[:, :2]
+
+
+def _world_centre(model: mujoco.MjModel, geom) -> np.ndarray:  # noqa: ANN001
+    """An obstacle geom's xy centre in the world, mesh or primitive."""
+    if model.geom_dataid[geom.id] >= 0:
+        world = _world_footprint(model, geom)
+        return (world.min(axis=0) + world.max(axis=0)) / 2.0
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    return np.asarray(data.geom_xpos[geom.id][:2])
+
+
+def _world_bottom_z(model: mujoco.MjModel, geom) -> float:  # noqa: ANN001
+    """The lowest world z the geom occupies, mesh or box."""
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    rot = data.geom_xmat[geom.id].reshape(3, 3)
+    pos = data.geom_xpos[geom.id]
+    mesh_id = model.geom_dataid[geom.id]
+    if mesh_id >= 0:
+        adr, num = model.mesh_vertadr[mesh_id], model.mesh_vertnum[mesh_id]
+        local = model.mesh_vert[adr : adr + num]
+    else:
+        half = model.geom_size[geom.id]
+        local = np.array(
+            np.meshgrid([-1, 1], [-1, 1], [-1, 1])
+        ).T.reshape(-1, 3) * half
+    return float((local @ rot.T + pos)[:, 2].min())
+
+
+def _assert_hull_matches(
+    model: mujoco.MjModel, geom, shape: Polygon, where: str  # noqa: ANN001
+) -> None:
+    """A `Polygon` obstacle must be the mesh's own convex footprint.
+
+    MJX collides a mesh as its convex hull, so the planner's polygon has to
+    match *that*, not the concave outline: too tight and the planner drives
+    the object into a contact it never predicted, too loose and it refuses
+    space the simulator allows. Checked as a two-way containment with a
+    tolerance, since the polygon is deliberately simplified to eight
+    vertices for `Polygon.sdf`'s sake.
+    """
+    world = _world_footprint(model, geom)
+    hull = world[ConvexHull(world).vertices]
+    poly = np.asarray(shape.vertices)
+
+    # Every spec vertex lies inside the true hull (never wider than the
+    # geometry), within a millimetre of numerical slack.
+    inside = np.asarray(Polygon(jnp.asarray(hull)).sdf(jnp.asarray(poly)))
+    assert inside.max() < 1e-3, (
+        f"{where}: spec polygon sticks {inside.max() * 1000:.1f} mm outside "
+        f"the mesh's own convex hull"
+    )
+    # And it covers most of it -- a simplified hull, not a shrunken one.
+    area_spec = ConvexHull(poly).volume
+    area_hull = ConvexHull(hull).volume
+    assert area_spec / area_hull > 0.85, (
+        f"{where}: spec polygon covers only "
+        f"{area_spec / area_hull:.2f} of the mesh hull's area"
+    )
 
 
 def _obstacle_geoms(model: mujoco.MjModel) -> list:
@@ -181,17 +261,21 @@ def test_obstacles_match_the_mjcf(scene: str, robot: str) -> None:
     unmatched = list(range(len(shapes)))
     for geom in geoms:
         where = f"{scene}/{robot} obstacle {geom.name}"
+        # World centre, not the authored `geom.pos`: MuJoCo re-frames a mesh
+        # geom onto its principal axes and compensates pos/quat, so for
+        # those two the authored numbers describe nothing.
+        centre = _world_centre(model, geom)
         # Loose pairing radius: `clutter`'s triangle has its centroid ~17 mm
         # from its MJCF bounding box's centre, and obstacles in every scene
         # here are far further apart than that.
         j = min(
             unmatched,
             key=lambda k: float(
-                np.linalg.norm(geom.pos[:2] - np.asarray(shapes[k].center))
+                np.linalg.norm(centre - np.asarray(shapes[k].center))
             ),
         )
         shape = shapes[j]
-        gap = float(np.linalg.norm(geom.pos[:2] - np.asarray(shape.center)))
+        gap = float(np.linalg.norm(centre - np.asarray(shape.center)))
         assert gap < 0.05, (
             f"{where}: no spec obstacle near it (nearest {gap:.3f} m)"
         )
@@ -199,8 +283,13 @@ def test_obstacles_match_the_mjcf(scene: str, robot: str) -> None:
 
         if (scene, geom.name) in _KNOWN_DEVIATIONS:
             continue
+        if isinstance(shape, Polygon):
+            # Position is pinned by the hull comparison itself, which is in
+            # world coordinates -- a shifted polygon fails containment.
+            _assert_hull_matches(model, geom, shape, where)
+            continue
         np.testing.assert_allclose(
-            geom.pos[:2], np.asarray(shape.center), atol=_ATOL,
+            centre, np.asarray(shape.center), atol=_ATOL,
             err_msg=f"{where}: centre",
         )
         if isinstance(shape, Circle):
@@ -304,9 +393,11 @@ def test_objects_rest_on_the_tabletop(scene: str) -> None:
     )
 
     for geom in _obstacle_geoms(model):
-        assert geom.type[0] == mujoco.mjtGeom.mjGEOM_BOX, geom.name
-        bottom = float(geom.pos[2] - geom.size[2])
-        assert abs(bottom - surface_z) < _ATOL, (
+        # Mesh obstacles included: their lowest vertex in world coordinates
+        # is the thing that has to touch the table, and MuJoCo's re-framing
+        # means the authored pos/size cannot be read off directly.
+        bottom = _world_bottom_z(model, geom)
+        assert abs(bottom - surface_z) < 1e-4, (
             f"{scene}: obstacle {geom.name} bottom at z={bottom}, not resting "
             f"on z={surface_z}"
         )

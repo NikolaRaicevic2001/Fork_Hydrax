@@ -112,6 +112,92 @@ _TABLETOP_TEE_FOOTPRINT = dict(
 # `single_obstacle` and `ycb_clutter`.
 _TABLETOP_CUBE = Box(center=[0.2, 0.5], half_extents=[0.05, 0.05])
 
+# Mesh obstacles are carried as the 2D convex hull of their footprint,
+# simplified to eight vertices -- because that is what MJX actually
+# collides. A mesh geom is convexified at compile time (`maxhullvert` in
+# the MJCF caps it), so a planner holding the full concave outline would
+# reason about clearance the simulator does not enforce, and one holding
+# the bounding box would refuse space the simulator allows. Eight vertices
+# keeps 0.90-1.00 of the true hull area while keeping `Polygon.sdf` cheap:
+# it is evaluated per footprint sample per rollout.
+#
+# Generated from the compiled model, not measured by hand -- see
+# `tests/test_scenes.py`, which re-derives every one of these from the MJCF
+# and fails if the two drift apart.
+
+
+def _glyph(outline: Sequence[Tuple[float, float]], y: float) -> Polygon:
+    """One `icra_sign` glyph's hull, placed at its slot in the row.
+
+    Every glyph sits at x = 0.2 under the same -90 degree yaw, so the
+    outlines below are stored once in that placed orientation and only
+    translated here. `digit_2` and `digit_2b` share one.
+
+    Args:
+        outline: The glyph's hull, relative to its own centre.
+        y: Its slot in the row.
+
+    Returns:
+        The world-frame footprint.
+    """
+    return Polygon(jnp.array([[x + 0.2, py + y] for x, py in outline]))
+
+
+# ycb/spamCan/nontextured.stl, 0.94 of its true footprint hull.
+_SPAM_CAN = Polygon(
+    jnp.array(
+        [
+            [-0.1798, 0.7019], [-0.1624, 0.6933], [-0.0985, 0.6964],
+            [-0.0818, 0.7139], [-0.0825, 0.7361], [-0.1027, 0.7535],
+            [-0.1658, 0.7505], [-0.1838, 0.7334],
+        ]
+    )
+)
+# ycb/mustardBottle/nontextured.stl, 0.93 of its true footprint hull.
+_MUSTARD_BOTTLE = Polygon(
+    jnp.array(
+        [
+            [0.4533, 0.5120], [0.4848, 0.4961], [0.5213, 0.4950],
+            [0.5323, 0.5234], [0.5165, 0.5410], [0.4902, 0.5559],
+            [0.4468, 0.5572], [0.4361, 0.5333],
+        ]
+    )
+)
+
+# Glyph hulls, relative to each glyph's own centre, already under the row's
+# -90 degree yaw. The I's mesh is a plain 8-vertex slab, so its hull is
+# exactly its bounding box -- written as a polygon anyway, so that every
+# mesh geom in this scene has a polygon opposite it and the correspondence
+# stays one rule rather than one rule with an exception.
+_GLYPH_I = (
+    (-0.0500, -0.0122), (0.0500, -0.0122),
+    (0.0500, 0.0122), (-0.0500, 0.0122),
+)
+_GLYPH_R = (
+    (-0.0500, -0.0356), (0.0233, -0.0312),
+    (0.0341, -0.0285), (0.0445, -0.0205),
+    (0.0491, -0.0104), (0.0500, 0.0036),
+    (0.0500, 0.0356), (-0.0500, 0.0356),
+)
+_GLYPH_2 = (
+    (-0.0508, -0.0317), (-0.0288, -0.0334),
+    (0.0210, -0.0320), (0.0421, -0.0238),
+    (0.0508, -0.0002), (0.0410, 0.0237),
+    (0.0164, 0.0334), (-0.0508, 0.0334),
+)
+_GLYPH_0 = (
+    (-0.0486, -0.0149), (-0.0091, -0.0337),
+    (0.0201, -0.0324), (0.0486, -0.0152),
+    (0.0486, 0.0149), (0.0192, 0.0326),
+    (-0.0202, 0.0325), (-0.0486, 0.0152),
+)
+_GLYPH_6 = (
+    (-0.0429, -0.0239), (-0.0178, -0.0329),
+    (0.0233, -0.0324), (0.0515, -0.0020),
+    (0.0386, 0.0237), (0.0194, 0.0313),
+    (-0.0352, 0.0273), (-0.0515, -0.0007),
+)
+
 
 def _tee_scene(name: str, obstacles: Sequence[Shape]) -> SceneSpec:
     """A `SceneSpec` for one of the four T-block scenes.
@@ -186,22 +272,22 @@ SCENES: Dict[str, SceneSpec] = {
             Box(center=[0.4, 0.5], half_extents=[0.10, 0.125]),
         ],
     ),
-    # sim_task04: "... avoiding multiple obstacles". The three YCB actors
-    # are their meshes' own bounding boxes, placed at the bbox centre (the
-    # YCB meshes are not centred on their link origin) -- see
-    # ycb_clutter.xml for why boxes rather than meshes.
+    # sim_task04: "... avoiding multiple obstacles". Two of the three YCB
+    # actors are meshes in their URDFs and appear here as their convex
+    # hulls; dominoSugar is a box in its own URDF and stays one.
     "ycb_clutter": _tee_scene(
         "ycb_clutter",
         [
             _TABLETOP_CUBE,
-            # spamCan: bbox 0.1021 x 0.0601, centre (0.5672, 0.2734).
-            Box(center=[-0.1328, 0.7234], half_extents=[0.0511, 0.0301]),
-            # dominoSugar: a URDF box, 0.06 x 0.095 x 0.175, laid on its
-            # side by init_ori (-90 degrees about y) so its footprint is
-            # 0.175 x 0.095.
+            # spamCan and mustardBottle are meshes in their URDFs, so these
+            # are their convex hulls -- 0.82x and 0.71x their bounding
+            # boxes in plan, which is space the planner used to refuse.
+            _SPAM_CAN,
+            _MUSTARD_BOTTLE,
+            # dominoSugar is *not* a mesh: dominoSugar.urdf declares
+            # `<box size="0.06 0.095 0.175"/>`. Laid on its side by
+            # init_ori (-90 degrees about y), footprint 0.175 x 0.095.
             Box(center=[0.2, 0.25], half_extents=[0.0875, 0.0475]),
-            # mustardBottle: bbox 0.0972 x 0.0666, centre (1.1847, 0.0765).
-            Box(center=[0.4847, 0.5265], half_extents=[0.0486, 0.0333]),
         ],
     ),
     "icra_sign": SceneSpec(
@@ -214,20 +300,23 @@ SCENES: Dict[str, SceneSpec] = {
         # quat, [0,0,0.7071,-0.7071] (xyzw) = -90 degrees about z. The C
         # spawns unrotated, so this task needs a quarter turn too.
         goal=jnp.array([0.2, 0.85, -jnp.pi / 2]),
-        # Each glyph is the bounding box of its own `*_centered.ply`
-        # (scale 0.001), rotated -90 degrees about z like the MJCF geoms:
-        # half-extents stay in the glyph's own frame and `angle` carries
-        # the rotation, exactly as `<geom euler="0 0 -90">` does. The A
-        # reuses R's box; the source assets have no A mesh.
+        # Six glyphs are the convex hull of their own `*_centered.ply`
+        # (scale 0.001), which is what MJX collides the mesh geom as. The
+        # A is three boxes matching icra_sign.xml's own -- the source
+        # assets ship no A mesh, so there is no hull to take.
         obstacles=ObstacleField(
             [
-                Box([0.2, 1.00], [0.01216, 0.05000], angle=-jnp.pi / 2),  # I
-                Box([0.2, 0.70], [0.03563, 0.05000], angle=-jnp.pi / 2),  # R
-                Box([0.2, 0.55], [0.03563, 0.05000], angle=-jnp.pi / 2),  # A
-                Box([0.2, 0.30], [0.03338, 0.05076], angle=-jnp.pi / 2),  # 2
-                Box([0.2, 0.15], [0.03393, 0.05152], angle=-jnp.pi / 2),  # 0
-                Box([0.2, 0.00], [0.03338, 0.05076], angle=-jnp.pi / 2),  # 2
-                Box([0.2, -0.15], [0.03295, 0.05152], angle=-jnp.pi / 2),  # 6
+                _glyph(_GLYPH_I, 1.00),
+                _glyph(_GLYPH_R, 0.70),
+                # A: three boxes, matching icra_sign.xml's own -- the
+                # source assets have no A mesh to take a hull from.
+                Box([0.2000, 0.5631], [0.00950, 0.04920], angle=-1.82631),
+                Box([0.2000, 0.5369], [0.00950, 0.04920], angle=-1.31528),
+                Box([0.1825, 0.5500], [0.02494, 0.00760], angle=-1.57080),
+                _glyph(_GLYPH_2, 0.30),
+                _glyph(_GLYPH_0, 0.15),
+                _glyph(_GLYPH_2, 0.00),
+                _glyph(_GLYPH_6, -0.15),
             ]
         ),
         # The block-letter C's own dimensions, matching icra_sign.xml's

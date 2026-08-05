@@ -152,11 +152,36 @@ def test_no_flag_is_offered_that_its_world_would_ignore() -> None:
 def test_flat_algorithms_take_no_consensus_knobs() -> None:
     """A flat baseline has no rho or n_admm to accept and then ignore."""
     flags = _flags(build_parser(Experiment(world="3d", scene="shelf_gap")))
+    knobs = ("n_admm", "rho", "gamma", "robot_opt", "object_opt",
+             "consensus_alpha")
     for algorithm in ("mppi", "ps"):
-        for knob in ("n_admm", "rho", "gamma", "robot_opt", "object_opt"):
+        for knob in knobs:
             assert knob not in flags[algorithm], f"{algorithm} takes {knob}"
-    for knob in ("n_admm", "rho", "gamma", "robot_opt", "object_opt"):
+    for knob in knobs:
         assert knob in flags["admm"]
+
+
+def test_the_overlay_is_offered_to_every_3d_algorithm() -> None:
+    """Every sampling-based method has samples and a chosen trajectory.
+
+    The overlay used to be an ADMM-only subcommand flag, which left flat
+    baselines with no way to draw the population they also sample.
+    """
+    parser = build_parser(Experiment(world="3d", scene="shelf_gap"))
+    flags = _flags(parser)
+    for flag in ("show_samples", "show_optimal"):
+        assert flag in flags["top"], f"{flag} is not a top-level 3D flag"
+        for algorithm in ("admm", "mppi", "ps"):
+            assert flag not in flags[algorithm]
+    for algorithm in ("admm", "mppi", "ps"):
+        args = parser.parse_args(
+            ["--show-samples", "--show-optimal", algorithm]
+        )
+        assert args.show_samples and args.show_optimal
+
+    # 2D draws with matplotlib, not an MjvScene, so it has neither.
+    two_d = _flags(build_parser(Experiment(world="2d", env="gate")))
+    assert "show_samples" not in two_d["top"]
 
 
 def test_there_is_no_config_flag() -> None:
@@ -251,6 +276,36 @@ def test_sweep_drops_consensus_knobs_from_flat_cells() -> None:
     assert "--steps" in cmd
 
 
+def test_sweep_can_turn_the_overlay_on_for_every_cell() -> None:
+    """One `fixed:` block records trajectories for ADMM and flat alike.
+
+    `--show-samples`/`--show-optimal` are top-level, so they land before
+    the algorithm name and apply to whichever one the cell names.
+    """
+    fixed = {"show_samples": True, "show_optimal": True, "record": True}
+    for algorithm in ("admm", "mppi"):
+        cell = {"task": {"script": "shelf_gap"}, "algorithm": algorithm}
+        cmd = build_command(cell, fixed)
+        assert "--show-samples" in cmd and "--show-optimal" in cmd
+        assert cmd.index("--show-samples") < cmd.index(algorithm)
+
+
+def test_sweep_drops_consensus_alpha_from_flat_cells() -> None:
+    """`consensus_alpha` is an ADMM knob; a flat script rejects the flag.
+
+    It reached the flat command line when it was added, which fails the
+    cell at argparse rather than being ignored.
+    """
+    cell = {"task": {"script": "shelf_gap"}, "algorithm": "mppi"}
+    cmd = build_command(cell, {"consensus_alpha": 0.2, "steps": 20})
+    assert "--consensus-alpha" not in cmd
+    admm = build_command(
+        {"task": {"script": "shelf_gap"}, "algorithm": "admm"},
+        {"consensus_alpha": 0.2},
+    )
+    assert admm[admm.index("--consensus-alpha") + 1] == "0.2"
+
+
 def test_sweep_drops_flags_the_script_does_not_have() -> None:
     """One `fixed:` block can serve a mixed 2D/3D sweep.
 
@@ -281,3 +336,42 @@ def test_unknown_script_is_rejected_with_the_available_ones() -> None:
     """A typo names the alternatives rather than failing per cell."""
     with pytest.raises(ValueError, match="no examples/nope.py"):
         script_path("nope")
+
+
+def test_pose_flags_are_3d_only_and_default_to_random() -> None:
+    """`--start`/`--goal` pick an initial condition, not a sampler knob.
+
+    Unset means "draw one", so re-running a task varies the problem rather
+    than only the noise. 2D scenarios carry their own start/goal, so the
+    flags would have nothing to read.
+    """
+    parser = build_parser(Experiment(world="3d", scene="shelf_gap"))
+    flags = _flags(parser)
+    for flag in ("start", "goal"):
+        assert flag in flags["top"]
+    args = parser.parse_args(["admm"])
+    assert args.start is None and args.goal is None
+    args = parser.parse_args(["--start", "3", "--goal", "2", "admm"])
+    assert (args.start, args.goal) == ("3", "2")
+
+    two_d = _flags(build_parser(Experiment(world="2d", env="gate")))
+    assert "start" not in two_d["top"] and "goal" not in two_d["top"]
+
+
+def test_poses_are_sweepable_axes() -> None:
+    """A pose sweep expands; it used to collapse to one cell in silence."""
+    combos = expand({
+        "task": [{"script": "shelf_gap"}],
+        "algorithm": ["admm"],
+        "start": ["1", "2", "3"],
+        "goal": ["1", "2"],
+    })
+    assert len(combos) == 6
+    pairs = {(c["start"], c["goal"]) for c in combos}
+    assert len(pairs) == 6
+
+
+def test_an_unsweepable_axis_is_rejected() -> None:
+    """`_AXES` was a silent whitelist: a typo ran as a single cell."""
+    with pytest.raises(ValueError, match="not sweepable"):
+        expand({"task": [{"script": "shelf_gap"}], "sed": [1, 2, 3]})

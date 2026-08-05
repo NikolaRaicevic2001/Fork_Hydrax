@@ -80,7 +80,7 @@ so an expensive step never repeats for a cheap one:
 
 ```bash
 # 3D: 300 headless steps on the shelves, Warp rollouts, mp4 + trajectory overlay
-uv run python examples/shelf_gap.py --warp --record admm --headless --steps 300 --show-samples --show-optimal
+uv run python examples/shelf_gap.py --warp --record --show-samples --show-optimal admm --headless --steps 100
 
 # 3D: the point mass instead of the arm, flat MPPI baseline
 uv run python examples/clutter.py --robot point mppi --headless --steps 200
@@ -96,6 +96,9 @@ uv run python examples/pusht2d_gate.py --animate --no-jit admm --n-admm 12 --rho
 | `--samples`, `--horizon` | from config | Rollouts per block, consensus horizon $H$ |
 | `--warp` | off | *3D:* [MuJoCo Warp](https://mujoco.readthedocs.io/en/latest/mjwarp/) rollouts. Also disables JAX's GPU preallocation, which Warp needs |
 | `--record` | off | *3D:* mp4 (needs `ffmpeg`); with `--headless`, renders offscreen |
+| `--show-samples` | from config | *3D:* overlay the sampled candidate rollouts, as thin lines |
+| `--show-optimal` | from config | *3D:* overlay the chosen trajectory, as a thick line. Independent of `--show-samples`: either, both, or neither |
+| `--start`, `--goal` | random | *3D:* pose key from [`examples/poses/<task>.yaml`](examples/poses/) — five of each per task. Unset draws one (seeded by `--seed`); the run file records which |
 | `--no-plot` | off | Skip the summary figure |
 | `--contact-action`, `--no-relocate`, `--no-obstacles`, `--no-jit`, `--animate` | off | *2D:* object-block parameterization, contact search, obstacles, eager mode, gif |
 | ***after the algorithm*** (`admm`, or *3D:* `mppi`/`ps`) | | |
@@ -103,9 +106,17 @@ uv run python examples/pusht2d_gate.py --animate --no-jit admm --n-admm 12 --rho
 | `--n-admm`, `--rho`, `--gamma` | from config | *`admm`:* max iterations, penalty $\rho$, proximal weight $\gamma$ |
 | `--robot-opt`, `--object-opt` | `mppi` | *3D `admm`:* inner solver per block — `mppi`/`cem`/`ps`/`cbo` |
 | `--headless` | off | *3D:* no viewer; run `--steps` and save a run file |
-| `--show-samples` | from config | *3D `admm`:* overlay each block's sampled candidate rollouts, in **light green** |
-| `--show-optimal` | from config | *3D `admm`:* overlay each block's chosen trajectory, in **bright orange**, drawn the same way as a sample — the only difference is color. Independent of `--show-samples`: either, both, or neither. Both default off, per `oim/configs/{robot}.yaml`'s `run.show_samples`/`run.show_optimal` |
 | *config only* | | No flag: $\epsilon_r$, $\epsilon_s$, noise annealing, per-method sampler parameters, execution timestep, goal tolerances, 2D physics |
+
+The overlay works for every 3D algorithm — each samples a population and
+reduces it to one trajectory. Blocks are told apart by color, samples from
+the chosen path by width, and both are composited into the mp4 as well as
+the viewer:
+
+| Block | Samples | Chosen | Drawn by |
+| --- | --- | --- | --- |
+| object | pale cyan | strong blue | `admm` |
+| robot | pale amber | strong orange | `admm`, `mppi`, `ps` |
 
 | Output | When |
 | --- | --- |
@@ -126,8 +137,13 @@ fixed: { steps: 200, headless: true }
 ```
 
 Every combination runs as its own subprocess. `task` names the script and
-any flags for it; every other axis may be any flag that script takes, and
-an empty list drops the axis.
+any flags for it; an empty list drops the axis, and an axis that is not
+sweepable is rejected up front rather than ignored.
+
+`start`/`goal` are axes too, drawn from [`examples/poses/`](examples/poses/):
+five starts and five goals per task, each checked clear of that scene's
+obstacles. Sweeping them varies the problem; sweeping `seed` alone only
+redraws the sampler's noise against a fixed one.
 
 ```bash
 uv run python -m oim.run_launch                        # the whole product
@@ -386,7 +402,7 @@ oim/
 │   │                       baseline is built exactly like ADMM's
 │   ├── deterministic.py  run_interactive: viewer, replanning, recording
 │   ├── run.py            run_3d_admm / run_3d_plain: headless + logging
-│   ├── plan_overlay.py   each block's samples/chosen path, viewer and video
+│   ├── plan_overlay.py   samples/chosen path per block, viewer and video
 │   └── asynchronous.py   controller and simulator in separate processes
 │
 ├── experiment.py         Experiment + main(): the CLI, closed loop,
@@ -397,7 +413,8 @@ oim/
 │                         run_launch_config.yaml (the sweep definition)
 ├── tasks/  models/       MuJoCo tasks; MJCF scenes and meshes
 └── utils/                scenes.py (the 3D scene registry), plotting.py,
-                          spline, video, results.py (run files), metrics.py
+                          poses.py (examples/poses/*.yaml), spline, video,
+                          results.py (run files), metrics.py
 ```
 
 One `ADMM.optimize(state, params)` call, top to bottom:
