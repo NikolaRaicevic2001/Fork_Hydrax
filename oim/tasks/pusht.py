@@ -420,7 +420,16 @@ class PushT(Task, ConsensusTask):
         therefore driving the tip *away* from vertical, not toward it
         (task 11/12).
         """
-        r_mat = state.site_xmat[self.trace_site_ids[0]]
+        return self.tilt_angle(state.site_xmat[self.trace_site_ids[0]])
+
+    @staticmethod
+    def tilt_angle(r_mat: jax.Array) -> jax.Array:
+        """psi_tilt from a tip-site rotation matrix, shape (3, 3).
+
+        Split out from `_tilt` so the cost breakdown in `oim.utils.costs`
+        can reuse it from a `mujoco.MjData` (whose `site_xmat` is flat)
+        without restating the formula and letting the two drift apart.
+        """
         return jnp.arccos(jnp.clip(-r_mat[2, 2], -1.0, 1.0))
 
     def _tip_height_err(self, state: mjx.Data) -> jax.Array:

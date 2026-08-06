@@ -121,16 +121,93 @@ def _goal_and_obstacles(ax, obstacles, goal, verts: np.ndarray) -> None:  # noqa
     ax.grid(alpha=0.3)
 
 
+def _cost_panel(ax_c, task: Any, log: Dict[str, Any]) -> bool:  # noqa: ANN001
+    """Each cost term accumulated over the run, with its total in the legend.
+
+    Accumulated rather than per-step, which is what makes the panel legible.
+    Two terms -- the obstacle hinge and the alignment term -- are *exactly
+    zero* whenever they are satisfied and large when they are not, so a
+    per-step plot of them is a row of spikes to the axis floor that no log
+    scale can render honestly. Their running sum is monotone, so the curve
+    is smooth, a spike still shows as a step, its endpoint is the total the
+    legend quotes, and the vertical ordering at any x reads directly as
+    which term has cost the run the most so far.
+
+    Log-scaled because the terms span orders of magnitude by design (the
+    obstacle hinge is weighted 60000, the effort term 0.05); on a linear
+    axis the hinge is the only curve anyone can see.
+
+    Terms that stayed at zero the whole run are dropped rather than drawn
+    flat along the bottom -- a term that never fired is not evidence about
+    the run, and it costs a legend entry.
+
+    Returns:
+        Whether anything was drawn.
+    """
+    from oim.utils.costs import cost_totals, summarize  # noqa: PLC0415
+
+    series = summarize(task, log)
+    if series is None:
+        return False
+    totals = cost_totals(series)
+    drawn = False
+    for name, values in series.items():
+        if totals[name] <= 0.0:
+            continue
+        ax_c.plot(
+            np.cumsum(values), lw=1.4, label=f"{name}  (Σ {totals[name]:.4g})"
+        )
+        drawn = True
+    if not drawn:
+        return False
+    ax_c.plot(
+        np.cumsum(np.sum(list(series.values()), axis=0)),
+        color="k",
+        lw=1.8,
+        ls="--",
+        label=f"total  (Σ {totals['total']:.4g})",
+    )
+    ax_c.set_yscale("log")
+    # Floor the axis just under the smallest total rather than under the
+    # smallest *value*: a term whose first steps are ~0 has a running sum
+    # that starts near zero, and letting that set the limit stretches the
+    # axis over ten decades to show a transient nobody is reading, flatting
+    # every curve that matters. Every term's total stays visible; curves
+    # that began below the floor enter from the bottom edge.
+    finals = [totals[k] for k in series if totals[k] > 0.0]
+    ax_c.set_ylim(bottom=0.5 * min(finals))
+    ax_c.set_xlabel("control step")
+    ax_c.set_ylabel("accumulated cost")
+    ax_c.set_title("Cost terms (realized trajectory)")
+    ax_c.legend(fontsize=9, loc="best", framealpha=0.9)
+    ax_c.grid(alpha=0.3)
+    return True
+
+
 def _new_figure():  # noqa: ANN202
-    """A trajectory panel beside a diagnostics panel."""
+    """A trajectory panel, a diagnostics panel, and a cost panel.
+
+    `layout="constrained"` rather than a closing `tight_layout()`: the
+    trajectory panel is `set_aspect("equal")`, so its axes box cannot fill
+    the slot the gridspec hands it and the leftover shows up as a band of
+    white. `tight_layout` sizes slots without accounting for that, and the
+    band survives; the constrained engine shrinks the slot to the box it
+    actually needs, which is what closes the gaps between the panels.
+    """
     import matplotlib  # noqa: PLC0415
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    return plt, plt.subplots(
-        1, 2, figsize=(13, 5.5), gridspec_kw={"width_ratios": [1.4, 1]}
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(24, 6.8),
+        gridspec_kw={"width_ratios": [1.5, 1, 1.1]},
+        layout="constrained",
     )
+    fig.get_layout_engine().set(w_pad=0.02, h_pad=0.02, wspace=0.015)
+    return plt, (fig, axes)
 
 
 def plot_run_3d(
@@ -147,7 +224,7 @@ def plot_run_3d(
         path: Where to write the PNG.
         stride: Draw the footprint every this many control steps.
     """
-    plt, (fig, (ax, ax_r)) = _new_figure()
+    plt, (fig, (ax, ax_r, ax_c)) = _new_figure()
     verts = np.asarray(task.object_model.footprint.vertices)
     _goal_and_obstacles(
         ax, task.object_model.obstacles.shapes, task.object_model.goal, verts
@@ -157,7 +234,13 @@ def plot_run_3d(
     _sweep_footprints(ax, verts, poses, stride)
     pusher = log["robot_pos"]
     ax.plot(
-        pusher[:, 0], pusher[:, 1], "k.-", ms=3, lw=1, label="pusher", zorder=5
+        pusher[:, 0],
+        pusher[:, 1],
+        "k.-",
+        ms=4.5,
+        lw=1.4,
+        label="pusher",
+        zorder=5,
     )
     ax.set_title(
         f"{'reached' if log['reached'] else 'not reached'} in "
@@ -165,8 +248,9 @@ def plot_run_3d(
     )
     ax.legend(loc="upper left")
     _diagnostics_panel(ax_r, log)
+    if not _cost_panel(ax_c, task, log):
+        ax_c.set_visible(False)
 
-    fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"saved plot to {path}")
@@ -195,7 +279,7 @@ def plot_run_2d(
         path: Where to write the PNG.
         stride: Draw the footprint every this many control steps.
     """
-    plt, (fig, (ax, ax_r)) = _new_figure()
+    plt, (fig, (ax, ax_r, ax_c)) = _new_figure()
     verts = np.asarray(task.footprint.vertices)
     _draw_scene_2d(ax, scenario, verts)
 
@@ -203,7 +287,13 @@ def plot_run_2d(
     _sweep_footprints(ax, verts, poses, stride)
     robot = log["robot_pos"]
     ax.plot(
-        robot[:, 0], robot[:, 1], "k.-", ms=3, lw=1, label="robot", zorder=5
+        robot[:, 0],
+        robot[:, 1],
+        "k.-",
+        ms=4.5,
+        lw=1.4,
+        label="robot",
+        zorder=5,
     )
     ax.set_title(
         f"{scenario.name}  |  "
@@ -212,8 +302,9 @@ def plot_run_2d(
     )
     ax.legend(loc="upper left")
     _diagnostics_panel(ax_r, log)
+    if not _cost_panel(ax_c, task, log):
+        ax_c.set_visible(False)
 
-    fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"saved plot to {path}")

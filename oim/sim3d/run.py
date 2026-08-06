@@ -279,6 +279,11 @@ def _init_log(
         # cannot be recomputed from it.
         "pos_err": [],
         "theta_err": [],
+        # The end-effector pose quantities `oim.utils.costs` needs, which
+        # no other series carries. Logged for both embodiments: the point
+        # pusher has a trace site too, its tilt is simply constant.
+        "tip_tilt": [],
+        "tip_z": [],
     }
     if admm:
         # Meaningless for a flat controller: no consensus, no residuals.
@@ -432,6 +437,15 @@ def _log_step(
     log["qpos"].append(np.array(mj_data.qpos))
     log["qvel"].append(np.array(mj_data.qvel))
     log["robot_control"].append(np.array(us[-1]))
+    # The two end-effector quantities the cost breakdown needs that no other
+    # logged series carries. Free: `mj_step` has already run forward
+    # kinematics, so this is two array reads, not a second solve. Derived,
+    # so `save_run` drops them -- `qpos` is recorded and the tip pose is a
+    # forward-kinematics call away from it.
+    site = int(task.trace_site_ids[0])
+    r_mat = np.asarray(mj_data.site_xmat[site]).reshape(3, 3)
+    log["tip_tilt"].append(float(task.tilt_angle(r_mat)))
+    log["tip_z"].append(float(mj_data.site_xpos[site][2]))
     if admm:
         log["wrench"].append(np.array(task.realized_consensus(mj_data)))
         log["wrench_consensus"].append(np.array(params.z[0]))

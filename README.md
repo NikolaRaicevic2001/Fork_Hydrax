@@ -121,7 +121,7 @@ the viewer:
 | Output | When |
 | --- | --- |
 | `results/runs/*.json` | *3D:* `--headless`, *2D:* always — settings, scene, per-step states/controls/wrenches/residuals/timings |
-| `recordings/*.png` | unless `--no-plot` — trajectory + residuals |
+| `recordings/*.png` | unless `--no-plot` — trajectory + residuals + accumulated cost terms |
 | `recordings/*.gif` / `*.mp4` | `--animate` / `--record` |
 
 ### Sweeps
