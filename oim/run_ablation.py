@@ -25,10 +25,13 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set, Tuple
 
 from oim import ROOT
 from oim.run_launch import _await_gpu, script_path
+from oim.utils.results import load_run
+
+RUNS_DIR = os.path.join(ROOT, "results", "runs")
 
 SCENES = [
     "open_table",
@@ -109,6 +112,73 @@ def build_cells() -> List[Dict[str, Any]]:
                         )
                     )
     return cells
+
+
+# The hyperparameter fields a run file always records (`None` where the
+# algorithm has no such knob) -- the same six a cell's own `flags` are a
+# partial view of. Comparing on all six, not just `flags`, is what makes a
+# cell match a run regardless of which axis originally produced it (the
+# baseline point of one axis is not distinguishable from another's, and
+# should not be re-run just because a different axis happened to log it).
+_HP_KEYS = (
+    "horizon",
+    "samples",
+    "n_admm",
+    "consensus_alpha",
+    "rho_torque",
+    "iterations",
+)
+
+
+def _resolved_hp(cell: Dict[str, Any]) -> Dict[str, Any]:
+    """The full hyperparameter signature a run of this cell would save.
+
+    Mirrors what `oim.experiment._save` actually writes: every field is
+    present, `None` for whichever knobs the algorithm doesn't have.
+    """
+    flags = cell["flags"]
+    admm = cell["algorithm"] == "admm"
+    return dict(
+        horizon=flags.get("horizon", BASELINE["horizon"]),
+        samples=flags.get("samples", BASELINE["samples"]),
+        n_admm=flags.get("n_admm", BASELINE["n_admm"]) if admm else None,
+        consensus_alpha=(
+            flags.get("consensus_alpha", BASELINE["consensus_alpha"])
+            if admm
+            else None
+        ),
+        rho_torque=flags.get("rho_torque") if admm else None,
+        iterations=None if admm else flags.get("iterations", 1),
+    )
+
+
+def cell_signature(cell: Dict[str, Any]) -> Tuple[Any, ...]:
+    """A cell's identity: scene, algorithm, and its resolved hyperparameters."""
+    hp = _resolved_hp(cell)
+    return (cell["scene"], cell["algorithm"]) + tuple(hp[k] for k in _HP_KEYS)
+
+
+def _run_signature(run: Dict[str, Any]) -> Tuple[Any, ...]:
+    """A saved run file's identity, in the same shape `cell_signature` uses."""
+    scene = run["run"]["task"].replace("pusht3d_xarm6_", "")
+    hp = run["hyperparameters"]
+    return (scene, run["run"]["algorithm"]) + tuple(hp.get(k) for k in _HP_KEYS)
+
+
+def completed_signatures(runs_dir: str) -> Set[Tuple[Any, ...]]:
+    """Every (scene, algorithm, hyperparameters) already saved to disk.
+
+    Used to resume a sweep on a different machine: this reads whatever run
+    files were carried over, not a manifest, so it works whether or not
+    the previous run finished cleanly enough to write one.
+    """
+    sigs = set()
+    if not os.path.isdir(runs_dir):
+        return sigs
+    for name in os.listdir(runs_dir):
+        if name.endswith(".json"):
+            sigs.add(_run_signature(load_run(os.path.join(runs_dir, name))))
+    return sigs
 
 
 # Flags the top-level parser owns (before the algorithm subcommand);
@@ -198,9 +268,23 @@ def main() -> None:
         default=120.0,
         help="Seconds to wait for GPU memory before running anyway.",
     )
+    p.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Run every cell, even ones a run file in oim/results/runs/ "
+        "already matches (default: skip those, so moving a partial "
+        "sweep's run files to a new machine and rerunning continues it).",
+    )
     args = p.parse_args()
 
     cells = build_cells()
+    if not args.no_resume:
+        done = completed_signatures(RUNS_DIR)
+        remaining = [c for c in cells if cell_signature(c) not in done]
+        skipped = len(cells) - len(remaining)
+        if skipped:
+            print(f"skipping {skipped} cells already in {RUNS_DIR}")
+        cells = remaining
     print(f"{len(cells)} cells, steps={STEPS}, seed={SEED}")
     if args.dry_run:
         for cell in cells:
