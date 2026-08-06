@@ -318,6 +318,12 @@ def build_parser(
             sp.add_argument("--seed", type=int, default=run["seed"])
             sp.add_argument("--steps", type=int, default=run["steps"])
             sp.add_argument(
+                "--iterations",
+                type=int,
+                default=smp["iterations"],
+                help="Internal optimizer passes per real control step.",
+            )
+            sp.add_argument(
                 "--headless",
                 action="store_true",
                 help="No viewer: run --steps steps and save a run file.",
@@ -347,6 +353,13 @@ def build_parser(
             type=float,
             default=adm["consensus_alpha"],
             help="EMA weight on A^o/A^r across ADMM rounds (1.0 = raw).",
+        )
+        admm.add_argument(
+            "--rho-torque",
+            type=float,
+            default=None,
+            help="Separate initial penalty on the wrench's torque "
+            "component; unset uses --rho for all three.",
         )
     admm.add_argument("--n-admm", type=int, default=adm["n_admm"])
     admm.add_argument("--rho", type=float, default=adm["rho"])
@@ -405,8 +418,10 @@ def _save(
             horizon=args.horizon,
             n_admm=getattr(args, "n_admm", None),
             rho=getattr(args, "rho", None),
+            rho_torque=getattr(args, "rho_torque", None),
             gamma=getattr(args, "gamma", None),
             consensus_alpha=getattr(args, "consensus_alpha", None),
+            iterations=getattr(args, "iterations", None),
             control_dt=control_dt,
             goal_pos_tol=run_cfg["goal_pos_tol"],
             goal_theta_tol=run_cfg["goal_theta_tol"],
@@ -491,6 +506,7 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             rho=args.rho,
             gamma=args.gamma,
             consensus_alpha=args.consensus_alpha,
+            rho_torque=args.rho_torque,
             start=start,
             goal=goal,
         )
@@ -512,6 +528,7 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             samples=args.samples,
             seed=args.seed,
             control_dt=CONTROL_DT,
+            iterations=args.iterations,
             start=start,
             goal=goal,
         )

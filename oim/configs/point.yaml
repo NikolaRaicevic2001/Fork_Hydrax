@@ -39,6 +39,7 @@ sampler:
   robot_num_knots: 4
   robot_spline: linear
   object_spline: zero # the object block always uses num_knots = horizon
+  iterations: 1 # flat baselines only; see xarm6.yaml
   mppi:
     noise_level: 0.5
     temperature: 0.5

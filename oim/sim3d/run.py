@@ -451,7 +451,10 @@ def _log_step(
         log["wrench_consensus"].append(np.array(params.z[0]))
         log["primal_residual"].append(float(params.primal_residual))
         log["dual_residual"].append(float(params.dual_residual))
-        log["rho"].append(float(params.rho))
+        # `rho` is a scalar (paper's Algorithm 4) or a per-dimension vector
+        # (force/torque split, see `WrenchConsensus.penalty_cost`); the
+        # log keeps one number, so a vector logs its mean.
+        log["rho"].append(float(np.mean(np.asarray(params.rho))))
     return block_pose
 
 

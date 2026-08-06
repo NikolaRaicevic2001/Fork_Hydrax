@@ -94,6 +94,7 @@ def build_sub_optimizer(
     seed: int,
     num_samples: int,
     sampler_cfg: Dict[str, Any],
+    iterations: int = 1,
 ) -> object:
     """Build one sub-optimizer by name, from the config's block for it.
 
@@ -112,6 +113,13 @@ def build_sub_optimizer(
         seed: RNG seed.
         num_samples: Rollouts per iteration.
         sampler_cfg: The config's `sampler` block.
+        iterations: Internal optimizer passes per call to `optimize()`.
+            A flat baseline replans once per real control step regardless
+            of this; it is the "vanilla, more inner iterations" side of
+            the iterations-vs-n_admm ablation, not something ADMM's own
+            blocks should use (raising it there was measured to hurt, not
+            help, since each block converges harder to its own individual
+            optimum before the next consensus round rather than settling).
 
     Returns:
         The controller.
@@ -127,6 +135,7 @@ def build_sub_optimizer(
         num_knots=num_knots,
         seed=seed,
         num_samples=num_samples,
+        iterations=iterations,
     )
     own = sampler_cfg[name]
     if name == "mppi":
@@ -208,6 +217,7 @@ def build_admm_3d(
     rho: float,
     gamma: float,
     consensus_alpha: float = 1.0,
+    rho_torque: Optional[float] = None,
     start: Optional[Sequence[float]] = None,
     goal: Optional[Sequence[float]] = None,
 ) -> Tuple[PushT, ADMM, mujoco.MjModel, mujoco.MjData]:
@@ -224,10 +234,17 @@ def build_admm_3d(
         robot_opt: Sub-optimizer for the robot block.
         object_opt: Sub-optimizer for the object block.
         n_admm: Max ADMM iterations per control step.
-        rho: Initial penalty.
+        rho: Initial penalty, on the wrench's two force components (and
+            the torque component too, if `rho_torque` is unset).
         gamma: Proximal weight.
         consensus_alpha: EMA weight on A^o/A^r across ADMM rounds (1.0 =
             raw). See `ADMM`.
+        rho_torque: Initial penalty on the wrench's torque component alone,
+            or `None` to use `rho` for all three (the paper's single
+            scalar). Splitting the two lets the consensus penalty pull
+            harder on orientation agreement than on position, independent
+            of the cost function -- the orientation-lag pattern seen so
+            far is otherwise always chased through cost weights alone.
         start: Object start pose, or `None` for the scene's own.
         goal: Object goal pose, or `None` for the scene's own. See
             `examples/poses/`.
@@ -277,6 +294,11 @@ def build_admm_3d(
         num_samples=samples,
         sampler_cfg=smp,
     )
+    # A vector rho weights the wrench's torque component separately from
+    # its two forces (WrenchConsensus.penalty_cost sums rho * diff**2, so
+    # this is a per-dimension penalty, not a single scalar); unset keeps
+    # the paper's single scalar.
+    rho_init = rho if rho_torque is None else np.array([rho, rho, rho_torque])
     ctrl = ADMM(
         task,
         robot_optimizer,
@@ -286,7 +308,7 @@ def build_admm_3d(
         eps_r=adm["eps_r"],
         eps_s=adm["eps_s"],
         proximal_weight=gamma,
-        rho_init=rho,
+        rho_init=rho_init,
         noise_min=adm["noise_min"],
         noise_kappa=adm["noise_kappa"],
         noise_max=adm["noise_max"],
@@ -307,6 +329,7 @@ def build_flat_3d(
     samples: int,
     seed: int,
     control_dt: float,
+    iterations: int = 1,
     start: Optional[Sequence[float]] = None,
     goal: Optional[Sequence[float]] = None,
 ) -> Tuple[PushT, object, mujoco.MjModel, mujoco.MjData]:
@@ -326,6 +349,10 @@ def build_flat_3d(
         samples: Rollouts per iteration.
         seed: RNG seed.
         control_dt: Replanning period, also the planner's rollout timestep.
+        iterations: Internal optimizer passes per real control step (paper
+            default 1). The "vanilla, more inner iterations" side of the
+            iterations-vs-n_admm ablation -- does replanning harder each
+            step buy what ADMM's outer consensus loop buys, or not.
         start: Object start pose, or `None` for the scene's own.
         goal: Object goal pose, or `None` for the scene's own. See
             `examples/poses/`.
@@ -350,6 +377,7 @@ def build_flat_3d(
         spline=smp["robot_spline"],
         seed=seed,
         num_samples=samples,
+        iterations=iterations,
         sampler_cfg=smp,
     )
     mj_model, mj_data = _execution_model(task, robot, w3, start, goal)

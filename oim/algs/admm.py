@@ -55,9 +55,16 @@ class ConsensusSpace(ABC):
 
         Collapses only the consensus dimension; the caller sums over the
         horizon and samples. Shared by both blocks (paper eq. 24-25).
+
+        `rho` may be a scalar (paper's Algorithm 4) or a per-dimension
+        vector broadcastable against the consensus dim (e.g. a separate
+        penalty on the wrench's torque component vs. its two forces) --
+        weighting each squared term before summing is what makes the
+        vector case differ from the scalar one; for a scalar it reduces to
+        the same value either order.
         """
         diff = self.normalize(actual - z + dual)
-        return 0.5 * rho * jnp.sum(diff**2, axis=-1)
+        return 0.5 * jnp.sum(rho * diff**2, axis=-1)
 
     def residual_norm(self, v: jax.Array) -> jax.Array:
         """Norm of a residual, in the same normalized units as the penalty."""
@@ -985,7 +992,11 @@ class ADMM(SamplingBasedController):
         primal_res = self.consensus.residual_norm(
             jnp.concatenate([w_obj_ema - z_new, w_rob_ema - z_new])
         )
-        dual_res = carry.rho * self.consensus.residual_norm(z_new - carry.z)
+        # Weighted inside the norm, not multiplied after: identical to the
+        # old `rho * residual_norm(...)` for a scalar rho (a scalar factors
+        # out of a norm either way), but stays a scalar -- needed by
+        # `_cond` below -- when rho is a per-dimension vector.
+        dual_res = self.consensus.residual_norm(carry.rho * (z_new - carry.z))
 
         # Algorithm 4 step 7: adaptive penalty.
         rho = jnp.where(
@@ -996,7 +1007,7 @@ class ADMM(SamplingBasedController):
 
         if self.debug_print:
             jax.debug.print(
-                "ADMM it={it} primal={p:.4f} dual={d:.4f} rho={r:.3f}",
+                "ADMM it={it} primal={p:.4f} dual={d:.4f} rho={r}",
                 it=carry.it,
                 p=primal_res,
                 d=dual_res,

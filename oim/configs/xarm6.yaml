@@ -42,6 +42,9 @@ sampler:
   robot_num_knots: 4
   robot_spline: linear
   object_spline: zero # the object block always uses num_knots = horizon
+  iterations: 1 # flat baselines only; a real control step always replans
+  # once regardless, so this is purely the iterations-vs-n_admm ablation's
+  # "vanilla, more inner iterations" axis.
   mppi:
     noise_level: 0.5
     temperature: 0.5
