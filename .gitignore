@@ -8,3 +8,8 @@ __pycache__
 MUJOCO_LOG.TXT
 .idea
 2d_3d_admm_hydrax_integration.md
+
+# Experiment outputs (local only)
+oim/recordings/
+oim/results/
+*.mp4
