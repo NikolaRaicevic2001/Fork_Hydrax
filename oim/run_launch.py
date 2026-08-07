@@ -61,15 +61,29 @@ _ADMM_ONLY = (
     "object_opt",
     "n_admm",
     "rho",
+    "rho_torque",
     "gamma",
     "consensus_alpha",
 )
 
-# Sweep axes, in nesting order: earlier axes vary slowest, so every cell of
-# one task finishes before the next task starts.
+# The mirror image: flags only a *flat* baseline's subparser defines, so an
+# `iterations:` in `fixed:` reaches `mppi`/`ps` and is dropped before it can
+# reach `admm`, which does not accept it. Without this the two lists are
+# asymmetric and a perfectly reasonable `fixed:` block kills every ADMM cell
+# of a mixed sweep with an argparse error, once per cell, minutes apart --
+# the exact failure `_check_fixed` exists to prevent.
+_FLAT_ONLY = ("iterations",)
+
 # Sweep axes, outermost first -- this is the nesting order, so everything
 # for task 1 finishes before task 2 starts. `start`/`goal` sit beside
 # `seed` because all three vary a trial rather than the method.
+#
+# The ADMM penalty knobs are axes and not just `fixed:` entries because
+# they are what an ablation is usually *about*: `rho` sets how hard the
+# consensus penalty pulls, and it has the largest measured effect of any
+# parameter here. They are all in `_ADMM_ONLY`, so a flat cell drops them
+# and `expand` collapses the duplicates -- sweeping `rho` over k values
+# therefore costs k ADMM cells and still only one flat cell.
 _AXES = (
     "task",
     "algorithm",
@@ -78,6 +92,9 @@ _AXES = (
     "horizon",
     "samples",
     "n_admm",
+    "rho",
+    "gamma",
+    "consensus_alpha",
     "start",
     "goal",
     "seed",
@@ -275,10 +292,11 @@ def build_command(
         **{k: v for k, v in cell.items() if k not in ("task", "algorithm")},
         **task,
     }
-    if algorithm != "admm":
-        # `fixed:` is applied to every cell, so an ADMM-only knob set there
-        # would otherwise land on a flat command line.
-        settings = {k: v for k, v in settings.items() if k not in _ADMM_ONLY}
+    # `fixed:` is applied to every cell, so a knob belonging to the other
+    # algorithm family would otherwise land on this command line, where the
+    # subparser now rejects it rather than ignoring it.
+    drop = _ADMM_ONLY if algorithm != "admm" else _FLAT_ONLY
+    settings = {k: v for k, v in settings.items() if k not in drop}
 
     pre: List[str] = []
     post: List[str] = []
@@ -381,7 +399,10 @@ def _label(cell: Dict[str, Any]) -> str:
     parts.append(str(cell.get("algorithm", "admm")))
     parts += [
         f"{k}={cell[k]}"
-        for k in ("horizon", "samples", "n_admm", "seed")
+        for k in (
+            "horizon", "samples", "n_admm", "rho", "gamma",
+            "consensus_alpha", "start", "goal", "seed",
+        )
         if k in cell
     ]
     return " ".join(parts)

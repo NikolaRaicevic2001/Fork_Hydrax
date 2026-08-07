@@ -1,73 +1,43 @@
-# Sweep definition for `oim/run_launch.py`.
+# Ablation: which ADMM knobs move performance vs flat MPPI.
+# Cartesian product; ADMM-only axes (n_admm/rho/gamma/consensus_alpha/opts)
+# collapse for mppi. ≈540 ADMM + 15 MPPI cells (~12–16 h with warp).
+# Slice with: python -m oim.run_launch --only rho=1.0 --dry-run
 #
-# `sweep` lists the values each axis takes; the launcher runs the full
-# cartesian product, invoking one `examples/` script per combination.
-# `fixed` is passed to every run unchanged. Everything here maps onto a
-# real flag of the script it is sent to, so a sweep cell is reproducible by
-# hand: the launcher prints the exact command it ran.
-#
-# Axis order is the nesting order, outermost first -- with `task` first,
-# every algorithm/horizon/seed combination for task 1 finishes before task
-# 2 starts, which is what you want when a sweep is interrupted.
-#
-# Each cell is its own process, so it gets the whole GPU; the launcher
-# waits for the previous cell's memory to come back before starting the
-# next.
-#
-# Cells that make no sense are skipped automatically: the 2D world has no
-# flat baselines (`PushT2D` implements only `ConsensusTask`).
+# Not sweepable here (edit configs/xarm6.yaml or add an axis): temperature,
+# noise_level, costs, robot_num_knots, rho_torque.
 
 sweep:
-  # `script` names the file under `examples/`; any other key in the entry
-  # becomes a flag for it. A 2D script takes no `robot`, and a
-  # single-embodiment 3D scene takes only its own.
+  # Difficulty span: free space → tight gap (high rot/trans) → within push ceiling.
   task:
     - { script: open_table }
-    - { script: single_obstacle }
     - { script: shelf_gap }
-    - { script: ycb_clutter }
     - { script: icra_sign }
-    # - { script: clutter, robot: xarm6 }
-    # - { script: clutter, robot: point }
-    # - { script: pusht2d_clutter }
-    # - { script: pusht2d_corridor }
-    # - { script: pusht2d_gate }
 
-  algorithm: [admm]
-
-  # ADMM's inner solvers. Ignored for flat algorithms, which have no
-  # blocks -- the launcher drops the duplicate cells rather than running
-  # the same flat baseline once per (robot_opt, object_opt) pair.
+  algorithm: [admm, mppi]
   robot_opt: [mppi]
   object_opt: [mppi]
 
+  # Fixed at config (32 / 128). H↑ without more robot knots is confounded;
+  # samples↑ does little while MPPI ESS≈1 (temperature not a CLI axis).
   horizon: []
   samples: []
-  n_admm: []
-  seed: []
 
-  # Initial conditions, from examples/poses/<task>.yaml -- five starts and
-  # five goals per task, every one checked clear of that scene's obstacles
-  # by tests/test_poses.py. Sweeping these varies the *problem*; sweeping
-  # `seed` only redraws the sampler's noise against a fixed one. Left
-  # empty, each run draws a pair (seeded by `seed`) and records which in
-  # its run file, so a sweep over seeds is already a sweep over poses.
+  # Core ADMM questions: does the loop help, how stiff is consensus,
+  # does proximal / proposal EMA stabilize coordination?
+  n_admm: [1, 4, 8]
+  rho: [0.1, 1.0, 10.0]
+  gamma: [0.0, 0.1]
+  consensus_alpha: [0.5, 1.0]
+
+  # Seed already randomizes start/goal; leave these empty.
   start: []
   goal: []
+  seed: [1]
 
-# Applied to every cell. Any flag of the scripts in this sweep works here,
-# and any of them can be overridden for one sweep with `--set key=value`
-# (or `--warp`, shorthand for `--set warp=true`). A key no script in the
-# sweep accepts is rejected before the first cell runs; a key only *some*
-# accept (a 2D script has no --record) is dropped for the rest, and the
-# launcher prints which.
 fixed:
-  steps: 500
-  headless: true # no viewer: a sweep cannot wait on a window
-  record: true # an mp4 per cell; --set record=false to skip
-  # Trajectory overlay, composited into each cell's mp4. Works for every
-  # 3D algorithm: ADMM draws its object block (blue) and robot block
-  # (orange) separately, a flat baseline draws its one robot population.
-  show_samples: true # thin lines: the candidate rollouts considered
-  show_optimal: true # thick line: the trajectory chosen
-  # warp: true          # MuJoCo Warp backend instead of JAX
+  steps: 1000
+  headless: true
+  warp: true
+  record: true
+  show_samples: true
+  show_optimal: true  # logs object_plan/robot_plan (block disagreement)
