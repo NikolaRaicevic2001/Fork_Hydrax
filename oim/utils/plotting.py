@@ -64,28 +64,55 @@ def footprint_world(verts: np.ndarray, pose: np.ndarray) -> np.ndarray:
 
 
 def _diagnostics_panel(ax_r, log: Dict[str, Any]) -> None:  # noqa: ANN001
-    """ADMM residual/rho/wrench traces, or a flat baseline's error trace.
+    """ADMM residual/rho/wrench traces, plus the raw goal errors.
+
+    The goal errors go on a twinned right-hand axis, in metres and radians,
+    because nothing else in the figure reports them: the cost panel shows
+    `q_pos * d^2` and `q_theta * dtheta^2`, which are cost units under two
+    *different* weights -- 40 and 10 by default -- so a `goal_pos` of 26.9
+    is a distance of sqrt(26.9/40) = 0.82 m, and the two curves cannot be
+    read against each other as errors at all. They also share an axis with
+    the residuals only by accident of magnitude, hence the second scale.
 
     A flat controller's log has no consensus quantities (`_init_log` with
     `admm=False` never allocates `primal_residual`/`dual_residual`/`rho`/
     `wrench`) -- plotting those unconditionally is what crashed every
-    flat-baseline headless run with `KeyError: 'primal_residual'`. Fall
-    back to what every run logs regardless of algorithm: position and
-    orientation error over time.
+    flat-baseline headless run with `KeyError: 'primal_residual'`. There
+    the errors are the whole panel and keep the left axis to themselves.
     """
-    if "primal_residual" in log:
-        ax_r.plot(log["primal_residual"], label="primal residual")
-        ax_r.plot(log["dual_residual"], label="dual residual")
-        ax_r.plot(log["rho"], label="rho")
-        ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
-        ax_r.set_title("ADMM diagnostics")
-    else:
-        ax_r.plot(log["pos_err"], label="position error (m)")
-        ax_r.plot(log["theta_err"], label="orientation error (rad)")
+    errors = [
+        ("pos_err", "position error (m)", "tab:purple"),
+        ("theta_err", "orientation error (rad)", "tab:brown"),
+    ]
+    if "primal_residual" not in log:
+        for key, label, colour in errors:
+            if key in log:
+                ax_r.plot(log[key], label=label, color=colour)
         ax_r.set_title("Convergence")
+        ax_r.set_xlabel("control step")
+        ax_r.legend()
+        ax_r.grid(alpha=0.3)
+        return
+
+    ax_r.plot(log["primal_residual"], label="primal residual")
+    ax_r.plot(log["dual_residual"], label="dual residual")
+    ax_r.plot(log["rho"], label="rho")
+    ax_r.plot(np.linalg.norm(log["wrench"], axis=1), label="|w_rob| (N)")
+    ax_r.set_title("ADMM diagnostics")
     ax_r.set_xlabel("control step")
-    ax_r.legend()
     ax_r.grid(alpha=0.3)
+
+    ax_e = ax_r.twinx()
+    for key, label, colour in errors:
+        if key in log:
+            ax_e.plot(log[key], label=label, color=colour, ls="--", lw=1.6)
+    ax_e.set_ylabel("goal error (m, rad)")
+    ax_e.set_ylim(bottom=0.0)
+    # One legend for both axes: two boxes on a panel this dense read as
+    # two unrelated plots.
+    handles, labels = ax_r.get_legend_handles_labels()
+    h2, l2 = ax_e.get_legend_handles_labels()
+    ax_r.legend(handles + h2, labels + l2, fontsize=9, loc="best")
 
 
 def _sweep_footprints(ax, verts: np.ndarray, poses, stride: int) -> None:  # noqa: ANN001

@@ -89,7 +89,7 @@ sampler:
 
 costs:
   # --- shared by both blocks ---
-  q_pos: 100.0            # running goal tracking, translation
+  q_pos: 50.0            # running goal tracking, translation
   q_theta: 10.0           # running goal tracking, rotation
   qf_pos: 500.0           # terminal goal tracking, translation
   qf_theta: 150.0         # terminal goal tracking, rotation
