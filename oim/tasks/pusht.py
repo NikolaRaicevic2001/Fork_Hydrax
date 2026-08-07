@@ -63,6 +63,7 @@ SCENES = {
         "mjcf":
             "xarm6_pusht_clutter_2/scene.xml",
         "base_pos": (0.0, 0.0),
+        "base_z": -0.0111,
         "base_yaw_deg":
             0.0,
         "world_frame":
@@ -193,7 +194,8 @@ class PushT(Task, ConsensusTask):
             # same pattern as overriding opt.timestep above: mutate the
             # loaded mj_model before it's handed to mjx.
             base_id = mj_model.body("xarm6_link_base").id
-            mj_model.body_pos[base_id] = [*self.scene_cfg["base_pos"], 0.0]
+            mj_model.body_pos[base_id] = [*self.scene_cfg["base_pos"],
+                                          self.scene_cfg.get("base_z", 0.0)]
             yaw = jnp.deg2rad(self.scene_cfg["base_yaw_deg"])
             mj_model.body_quat[base_id] = [
                 float(jnp.cos(yaw / 2)),

@@ -413,6 +413,14 @@ class Ros2Interface(RobotWorldInterface):
         )
 
     def send_velocity(self, u: np.ndarray) -> None:
+        cmd = [float(x) for x in np.asarray(u)] + [0.0] 
+
+        if not hasattr(self, "_dbg_i"):
+            self._dbg_i = 0
+        self._dbg_i += 1
+        if self._dbg_i % 25 == 0:
+            print(f"[dbg] cmd = {[round(c,3) for c in cmd]}")
+        
         if not self._enable_commands:  # dry run: read state/TF, publish nothing
             return
         # The planner emits 5 velocities; the real velocity controller expects
@@ -526,10 +534,9 @@ class SocketInterface(RobotWorldInterface):
         self._sock.close()
 
 
-def clamp_velocity(u: np.ndarray, limit: float = 1.0) -> np.ndarray:
-    """Clip a joint-velocity command to the actuators' ctrlrange (+/-1.0).
-
-    A hardware safety floor: the planner's samples are bounded but a bad
-    warm-start or numerical spike should never reach the arm unclipped.
-    """
-    return np.clip(np.asarray(u), -limit, limit)
+def clamp_velocity(u: np.ndarray, limit: float = 0.2) -> np.ndarray:
+    u = np.asarray(u)
+    peak = np.max(np.abs(u))
+    if peak > limit:
+        u = u * (limit / peak)  # scale all joints together, ratio preserved
+    return u
