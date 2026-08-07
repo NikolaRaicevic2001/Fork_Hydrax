@@ -33,7 +33,7 @@ sweep:
     # - { script: pusht2d_corridor }
     # - { script: pusht2d_gate }
 
-  algorithm: [admm, mppi]
+  algorithm: [admm]
 
   # ADMM's inner solvers. Ignored for flat algorithms, which have no
   # blocks -- the launcher drops the duplicate cells rather than running
@@ -41,7 +41,7 @@ sweep:
   robot_opt: [mppi]
   object_opt: [mppi]
 
-  horizon: [16]
+  horizon: []
   samples: []
   n_admm: []
   seed: []
@@ -62,7 +62,7 @@ sweep:
 # accept (a 2D script has no --record) is dropped for the rest, and the
 # launcher prints which.
 fixed:
-  steps: 1000
+  steps: 500
   headless: true # no viewer: a sweep cannot wait on a window
   record: true # an mp4 per cell; --set record=false to skip
   # Trajectory overlay, composited into each cell's mp4. Works for every

@@ -95,6 +95,7 @@ def build_sub_optimizer(
     num_samples: int,
     sampler_cfg: Dict[str, Any],
     iterations: int = 1,
+    overrides: Optional[Dict[str, Any]] = None,
 ) -> object:
     """Build one sub-optimizer by name, from the config's block for it.
 
@@ -120,12 +121,20 @@ def build_sub_optimizer(
             blocks should use (raising it there was measured to hurt, not
             help, since each block converges harder to its own individual
             optimum before the next consensus round rather than settling).
+        overrides: Per-call replacements for entries of
+            `sampler_cfg[name]`. The object block needs them because it
+            samples in a *different space* from the robot block --
+            normalized wrench against joint velocity in rad/s -- so a
+            single `noise_level` cannot be right for both. Sharing one was
+            measured to leave the object block's torque channel saturated
+            while its force channel explored ~6% of its range.
 
     Returns:
         The controller.
 
     Raises:
-        ValueError: If `name` is not a known sub-optimizer.
+        ValueError: If `name` is not a known sub-optimizer, or `overrides`
+            names a parameter that sub-optimizer does not take.
     """
     if name not in SUB_OPTIMIZERS:
         raise ValueError(f"unknown sub-optimizer '{name}'")
@@ -137,7 +146,14 @@ def build_sub_optimizer(
         num_samples=num_samples,
         iterations=iterations,
     )
-    own = sampler_cfg[name]
+    own = dict(sampler_cfg[name])
+    unknown = sorted(set(overrides or {}) - set(own))
+    if unknown:
+        raise ValueError(
+            f"sampler override(s) {unknown} are not parameters of "
+            f"'{name}' (known: {sorted(own)})"
+        )
+    own.update(overrides or {})
     if name == "mppi":
         return MPPI(task, **own, **common)
     if name == "cem":
@@ -267,6 +283,7 @@ def build_admm_3d(
         consensus_source=consensus_source,
         env=scene,
         goal=goal,
+        costs=cfg.get("costs"),
     )
     # Normalizing by the friction-cone limit keeps the ADMM penalty O(1)
     # and comparable to the task costs, so rho is a meaningful knob.
@@ -293,6 +310,11 @@ def build_admm_3d(
         seed=seed,
         num_samples=samples,
         sampler_cfg=smp,
+        # The object block samples wrenches, the robot block joint
+        # velocities; `sampler.object:` is where the former's own
+        # noise/temperature live. Absent, both blocks share one setting,
+        # which is what shipped before this key existed.
+        overrides=smp.get("object", {}).get(object_opt),
     )
     # A vector rho weights the wrench's torque component separately from
     # its two forces (WrenchConsensus.penalty_cost sums rho * diff**2, so
@@ -368,6 +390,7 @@ def build_flat_3d(
         robot=robot,
         env=scene,
         goal=goal,
+        costs=cfg.get("costs"),
     )
     ctrl = build_sub_optimizer(
         method,

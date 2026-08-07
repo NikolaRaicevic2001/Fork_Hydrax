@@ -425,6 +425,12 @@ def _save(
             control_dt=control_dt,
             goal_pos_tol=run_cfg["goal_pos_tol"],
             goal_theta_tol=run_cfg["goal_theta_tol"],
+            # The weights this run was scored under, not just the file
+            # they came from: `costs:` is now the thing being tuned, so a
+            # run file that only recorded `config: xarm6` would not say
+            # which tuning it was, and two runs a retune apart would be
+            # indistinguishable in `oim/run_eval.py`.
+            costs=getattr(args, "cfg", {}).get("costs"),
             **(extra_hyper or {}),
         ),
         task=task,

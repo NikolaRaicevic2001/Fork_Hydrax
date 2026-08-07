@@ -10,6 +10,60 @@ from oim.objects import PlanarPushingObject, se2_distance_sq
 from oim.task_base import ConsensusTask, Task
 from oim.utils.scenes import SCENES
 
+# Cost weights, in one place because several of them must be *identical* on
+# the two ADMM blocks. `q_*`/`qf_*` are read by both `robot_running_cost`
+# (via `ell_o`/`ell_c`) and `PlanarPushingObject`'s own goal tracking: the
+# blocks negotiate a wrench toward a shared objective, so a run where they
+# differ is one where the two halves are pulling toward different targets.
+# They used to be written out twice -- here and as `PlanarPushingObject`'s
+# defaults -- and agreed only by coincidence.
+#
+# `oim/configs/{robot}.yaml`'s `costs:` block overrides any subset of this;
+# anything it omits keeps the value below, so a task constructed directly
+# (the tests, a notebook) behaves exactly as it always did.
+DEFAULT_COSTS = {
+    # Shared by both blocks.
+    "q_pos": 40.0,  # running goal tracking, translation
+    "q_theta": 10.0,  # running goal tracking, rotation
+    "qf_pos": 500.0,  # terminal goal tracking, translation
+    "qf_theta": 150.0,  # terminal goal tracking, rotation
+    # Object block only.
+    "w_effort": 0.01,  # squared wrench
+    "w_obstacle": 60000.0,  # clearance hinge on the object's footprint
+    "obstacle_margin": 0.015,  # clearance below which that hinge activates
+    # Robot block only (paper eq. 20-22).
+    "r_r": 0.05,  # squared control effort
+    "w_ee": 40.0,  # approach: pull the tip toward the object
+    "r0": 0.02,  # radius inside which approach goes slack
+    "w_align": 15.0,  # stay behind the object relative to the reference
+    "gamma0_deg": 15.0,  # alignment cone half-angle
+    "w_tilt": 30.0,  # keep the stick pointing down (3D only)
+    "w_tip_z": 8.0,  # keep the tip at the block's mid-height (3D only)
+}
+
+
+def resolve_costs(costs: Optional[Dict[str, float]]) -> Dict[str, float]:
+    """`DEFAULT_COSTS` with `costs` applied over it, rejecting typos.
+
+    Args:
+        costs: Overrides for any subset of `DEFAULT_COSTS`, or None.
+
+    Returns:
+        The full weight mapping.
+
+    Raises:
+        ValueError: If `costs` names a weight `DEFAULT_COSTS` has not.
+            Ignoring it would leave the run using defaults while its run
+            file advertised the tuning that was asked for.
+    """
+    unknown = sorted(set(costs or {}) - set(DEFAULT_COSTS))
+    if unknown:
+        raise ValueError(
+            f"unknown cost weight(s) {unknown}; "
+            f"known: {sorted(DEFAULT_COSTS)}"
+        )
+    return {**DEFAULT_COSTS, **(costs or {})}
+
 
 class PushT(Task, ConsensusTask):
     """Push a T-shaped block to a desired pose, optionally through clutter.
@@ -51,6 +105,7 @@ class PushT(Task, ConsensusTask):
         consensus_source: Literal["twist", "contact"] = "twist",
         env: str = "clutter",
         goal: Optional[Sequence[float]] = None,
+        costs: Optional[Dict[str, float]] = None,
     ) -> None:
         """Load the MuJoCo model and set task parameters.
 
@@ -77,6 +132,16 @@ class PushT(Task, ConsensusTask):
                 run one scene against several goals. The goal marker in
                 the MJCF is a mocap body, moved separately by
                 `oim.sim3d.build`; this sets what the *costs* aim at.
+            costs: Overrides for any subset of `DEFAULT_COSTS`, normally
+                the `costs:` block of `oim/configs/{robot}.yaml`. One
+                mapping feeds both ADMM blocks, so the shared goal-tracking
+                weights cannot drift apart between them. Unknown keys
+                raise: a misspelled weight would otherwise be ignored in
+                silence and the run file would report a tuning that never
+                happened.
+
+        Raises:
+            ValueError: If `costs` names a weight `DEFAULT_COSTS` has not.
         """
         if robot not in ("point", "xarm6"):
             raise ValueError(f"robot must be 'point' or 'xarm6', got {robot!r}")
@@ -94,6 +159,8 @@ class PushT(Task, ConsensusTask):
                 "across its joints, not at a single pair of DOFs."
             )
 
+        cost = resolve_costs(costs)
+        self.costs = cost
         self.clutter = clutter
         self.robot = robot
         self.consensus_source = consensus_source
@@ -185,6 +252,9 @@ class PushT(Task, ConsensusTask):
             goal_pose = (
                 spec.goal if goal is None else jnp.asarray(goal, dtype=float)
             )
+            # The object block's goal weights are the robot block's, from
+            # the same mapping -- the two negotiate one wrench, so they
+            # have to be aiming at the same thing.
             self.object_model = PlanarPushingObject(
                 dt=self.dt,
                 goal=goal_pose,
@@ -193,25 +263,40 @@ class PushT(Task, ConsensusTask):
                 mu=0.4,
                 mass=2.0,
                 limit_surface_radius=0.06,
+                w_pos=cost["q_pos"],
+                w_theta=cost["q_theta"],
+                wf_pos=cost["qf_pos"],
+                wf_theta=cost["qf_theta"],
+                w_effort=cost["w_effort"],
+                w_obstacle=cost["w_obstacle"],
+                obstacle_margin=cost["obstacle_margin"],
             )
 
             # Robot-level cost weights (paper eq. 20).
-            self.r_r = 0.05
-            self.w_ee, self.r0 = 40.0, 0.02
-            self.w_align, self.gamma0 = 15.0, jnp.cos(jnp.pi / 12)
-            # w_tilt/w_tip_z: not in the paper, untuned, same order of
-            # magnitude as w_align/w_ee. w_tilt raised from 5.0 now that
-            # _tilt's sign bug is fixed (task 11/12) -- at 5.0 the tip still
-            # averaged ~35 degrees off vertical. Raised again from 20.0 to
-            # 50.0 (still visibly going near-horizontal under ADMM), then
-            # brought down to 30.0 -- 50.0 cost too much task performance.
-            self.w_tilt = 30.0
-            self.w_tip_z = 8.0
+            self.r_r = cost["r_r"]
+            self.w_ee, self.r0 = cost["w_ee"], cost["r0"]
+            self.w_align = cost["w_align"]
+            self.gamma0 = jnp.cos(jnp.deg2rad(cost["gamma0_deg"]))
+            # w_tilt/w_tip_z: not in the paper. w_tilt raised from 5.0 once
+            # _tilt's sign bug was fixed (task 11/12) -- at 5.0 the tip
+            # still averaged ~35 degrees off vertical -- then 20.0, 50.0
+            # (which cost too much task performance) and back to 30.0.
+            # None of that worked: measured over five 500-step runs the
+            # tilt angle is a random walk that goes *up* on 52-55% of
+            # steps, total variation ~8 rad for a net drift of ~1.3, and
+            # the mean tilt rank-orders exactly with the final position
+            # error across all five scenes. A linear penalty has a
+            # constant restoring gradient, which cannot arrest a drift
+            # whose source is that psi >= 0 has a reflecting boundary at
+            # zero; the weight is not the free parameter here, the
+            # functional form is.
+            self.w_tilt = cost["w_tilt"]
+            self.w_tip_z = cost["w_tip_z"]
             # Target tip height: the block's own resting z, read from the
             # model rather than hardcoded.
             self.tip_target_z = float(mj_model.body("block").pos[2])
-            self.q_pos, self.q_theta = 40.0, 10.0
-            self.qf_pos, self.qf_theta = 500.0, 150.0
+            self.q_pos, self.q_theta = cost["q_pos"], cost["q_theta"]
+            self.qf_pos, self.qf_theta = cost["qf_pos"], cost["qf_theta"]
             self.goal = goal_pose
 
     # ------------------------------------------------------------------

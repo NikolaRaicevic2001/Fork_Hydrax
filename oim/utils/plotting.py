@@ -121,21 +121,45 @@ def _goal_and_obstacles(ax, obstacles, goal, verts: np.ndarray) -> None:  # noqa
     ax.grid(alpha=0.3)
 
 
+def _rolling_mean(values: np.ndarray, window: int) -> np.ndarray:
+    """Centered rolling mean of `values`, same length, edges held.
+
+    Args:
+        values: The series to smooth.
+        window: Window width in samples; <= 1 returns the input unchanged.
+
+    Returns:
+        The smoothed series, same shape as the input.
+    """
+    if window <= 1 or len(values) < 2:
+        return values
+    pad = window // 2
+    padded = np.pad(values, (pad, window - 1 - pad), mode="edge")
+    return np.convolve(padded, np.ones(window) / window, mode="valid")
+
+
 def _cost_panel(ax_c, task: Any, log: Dict[str, Any]) -> bool:  # noqa: ANN001
-    """Each cost term accumulated over the run, with its total in the legend.
+    """Each cost term's per-step value over the run, total in the legend.
 
-    Accumulated rather than per-step, which is what makes the panel legible.
-    Two terms -- the obstacle hinge and the alignment term -- are *exactly
-    zero* whenever they are satisfied and large when they are not, so a
-    per-step plot of them is a row of spikes to the axis floor that no log
-    scale can render honestly. Their running sum is monotone, so the curve
-    is smooth, a spike still shows as a step, its endpoint is the total the
-    legend quotes, and the vertical ordering at any x reads directly as
-    which term has cost the run the most so far.
+    Per-step, not accumulated: the question this panel exists to answer is
+    "is the run driving its costs down", and a running sum of a nonnegative
+    series can never fall, so the accumulated view could show a term
+    levelling off but never show one being *solved*. It answered a
+    different question -- which term has cost the run the most so far --
+    which the legend's totals still report.
 
-    Log-scaled because the terms span orders of magnitude by design (the
-    obstacle hinge is weighted 60000, the effort term 0.05); on a linear
-    axis the hinge is the only curve anyone can see.
+    Two things make the per-step view legible where a plain log axis would
+    not be:
+
+    * **symlog.** The obstacle hinge and the alignment term are *exactly*
+      zero whenever they are satisfied, which a log axis cannot place at
+      all. `symlog` is linear through zero below `linthresh` and
+      logarithmic above, so a term reaching zero lands on the axis instead
+      of falling off it -- while the decades between the effort term (~0.1)
+      and the obstacle hinge (weighted 60000) stay readable.
+    * **Raw plus trend.** One control step's realized cost is noisy enough
+      that a raw series hides its own trend, so every term is drawn twice:
+      faint raw, solid rolling mean, one colour.
 
     Terms that stayed at zero the whole run are dropped rather than drawn
     flat along the bottom -- a term that never fired is not evidence about
@@ -150,34 +174,41 @@ def _cost_panel(ax_c, task: Any, log: Dict[str, Any]) -> bool:  # noqa: ANN001
     if series is None:
         return False
     totals = cost_totals(series)
-    drawn = False
-    for name, values in series.items():
-        if totals[name] <= 0.0:
-            continue
-        ax_c.plot(
-            np.cumsum(values), lw=1.4, label=f"{name}  (Σ {totals[name]:.4g})"
-        )
-        drawn = True
-    if not drawn:
+    active = {k: v for k, v in series.items() if totals[k] > 0.0}
+    if not active:
         return False
+
+    n = len(next(iter(active.values())))
+    window = max(1, min(n // 40, 25))
+
+    for name, values in active.items():
+        (line,) = ax_c.plot(values, lw=0.8, alpha=0.25)
+        ax_c.plot(
+            _rolling_mean(values, window),
+            lw=1.6,
+            color=line.get_color(),
+            label=f"{name}  (Σ {totals[name]:.4g})",
+        )
+    total = np.sum(list(active.values()), axis=0)
+    ax_c.plot(total, color="k", lw=0.8, alpha=0.25)
     ax_c.plot(
-        np.cumsum(np.sum(list(series.values()), axis=0)),
+        _rolling_mean(total, window),
         color="k",
-        lw=1.8,
+        lw=2.0,
         ls="--",
         label=f"total  (Σ {totals['total']:.4g})",
     )
-    ax_c.set_yscale("log")
-    # Floor the axis just under the smallest total rather than under the
-    # smallest *value*: a term whose first steps are ~0 has a running sum
-    # that starts near zero, and letting that set the limit stretches the
-    # axis over ten decades to show a transient nobody is reading, flatting
-    # every curve that matters. Every term's total stays visible; curves
-    # that began below the floor enter from the bottom edge.
-    finals = [totals[k] for k in series if totals[k] > 0.0]
-    ax_c.set_ylim(bottom=0.5 * min(finals))
+
+    # Linear region set by the *smallest term that is actually on*, so the
+    # cheapest live term (effort, ~0.1) still has vertical extent instead
+    # of being flattened onto zero, and no term is pushed below the axis.
+    # Floored so an all-zero-ish run cannot ask for linthresh = 0.
+    positive = [v[v > 0.0] for v in active.values()]
+    smallest = min(float(np.median(p)) for p in positive if p.size)
+    ax_c.set_yscale("symlog", linthresh=max(smallest, 1e-3), linscale=0.5)
+    ax_c.set_ylim(bottom=0.0)
     ax_c.set_xlabel("control step")
-    ax_c.set_ylabel("accumulated cost")
+    ax_c.set_ylabel("cost per control step")
     ax_c.set_title("Cost terms (realized trajectory)")
     ax_c.legend(fontsize=9, loc="best", framealpha=0.9)
     ax_c.grid(alpha=0.3)

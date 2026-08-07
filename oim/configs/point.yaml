@@ -56,6 +56,28 @@ sampler:
     noise_weight: 1.0
     step_size: 0.1
 
+# Cost weights, for both ADMM blocks and the flat baselines. See
+# `xarm6.yaml`'s `costs:` block for what each one does and what has been
+# measured about it; the values here are the same defaults, kept in this
+# file too so the two robots can be retuned independently (the point mass
+# has no stick to keep vertical, so `w_tilt`/`w_tip_z` are inert for it).
+# Anything omitted falls back to `oim.tasks.pusht.DEFAULT_COSTS`.
+costs:
+  q_pos: 40.0
+  q_theta: 10.0
+  qf_pos: 500.0
+  qf_theta: 150.0
+  w_effort: 0.01
+  w_obstacle: 60000.0
+  obstacle_margin: 0.015
+  r_r: 0.05
+  w_ee: 40.0
+  r0: 0.02
+  w_align: 15.0
+  gamma0_deg: 15.0
+  w_tilt: 30.0
+  w_tip_z: 8.0
+
 admm:
   robot_opt: mppi # mppi | cem | ps | cbo
   object_opt: mppi
