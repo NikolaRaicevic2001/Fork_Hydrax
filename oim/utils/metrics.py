@@ -15,7 +15,7 @@ Deliberately numpy-only: `oim/run_eval.py` reads files and should not pay
 for importing JAX or MuJoCo.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -44,6 +44,113 @@ def goal_errors(run: Dict[str, Any]) -> Dict[str, np.ndarray]:
         "pos_err": np.linalg.norm(poses[:, :2] - goal[:2], axis=1),
         "theta_err": np.abs(_wrap(poses[:, 2] - goal[2])),
     }
+
+
+def step_series(run: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Per-step curves for ablation plots, length `steps_run`.
+
+    `cum_success[t]` is 1 once both tolerances have been met at any step
+    `<= t` (and stays 1 after an early exit). `pos_err` comes from
+    `goal_errors`. `primal_residual` is present only for ADMM runs.
+
+    Args:
+        run: A payload from `oim.utils.results.load_run`.
+
+    Returns:
+        `cum_success`, `pos_err`, and optionally `primal_residual`.
+    """
+    hp = run["hyperparameters"]
+    err = goal_errors(run)
+    pos_err = err["pos_err"]
+    theta_err = err["theta_err"]
+    steps = int(len(pos_err))
+    pos_tol = float(hp["goal_pos_tol"])
+    theta_tol = float(hp["goal_theta_tol"])
+    at_goal = (pos_err < pos_tol) & (theta_err < theta_tol)
+    cum_success = np.maximum.accumulate(at_goal.astype(np.float64))
+
+    out: Dict[str, np.ndarray] = {
+        "cum_success": cum_success,
+        "pos_err": np.asarray(pos_err, dtype=np.float64),
+    }
+    residual = run["dynamic"].get("primal_residual")
+    if residual is not None and len(residual) > 0:
+        out["primal_residual"] = np.asarray(residual, dtype=np.float64)[:steps]
+    return out
+
+
+def _pad_series(
+    series: np.ndarray, length: int, *, fill: str
+) -> np.ndarray:
+    """Extend a shorter series to `length` for cross-trial alignment.
+
+    Args:
+        series: Values of shape `(T,)`.
+        length: Target length `T_max`.
+        fill: `"last"` repeats the final value (for cumulative success after
+            early exit); `"nan"` pads with NaN (errors / residuals so short
+            runs do not invent later values).
+    """
+    series = np.asarray(series, dtype=np.float64)
+    if len(series) >= length:
+        return series[:length]
+    pad = length - len(series)
+    if fill == "last":
+        value = series[-1] if len(series) else 0.0
+        return np.concatenate([series, np.full(pad, value)])
+    return np.concatenate([series, np.full(pad, np.nan)])
+
+
+def aggregate_step_series(
+    trials: Sequence[Dict[str, np.ndarray]],
+    control_dt: float,
+) -> Dict[str, Any]:
+    """Mean ± std of aligned per-step series across trials.
+
+    Cumulative success pads with the last value; `pos_err` and
+    `primal_residual` pad with NaN and aggregate with `nanmean` /
+    `nanstd`.
+
+    Args:
+        trials: `step_series` outputs for one (group, method) cell.
+        control_dt: Seconds per control step, for the shared x-axis.
+
+    Returns:
+        `steps`, `time`, and for each metric present in any trial
+        `{metric}_mean` / `{metric}_std` arrays of length `T_max`. Empty
+        `trials` yields empty arrays.
+    """
+    if not trials:
+        empty = np.zeros(0, dtype=np.float64)
+        return {"steps": empty, "time": empty}
+
+    t_max = max(len(t["pos_err"]) for t in trials)
+    steps = np.arange(t_max, dtype=np.float64)
+    out: Dict[str, Any] = {
+        "steps": steps,
+        "time": steps * float(control_dt),
+        "n_trials": len(trials),
+    }
+
+    keys_fill: Tuple[Tuple[str, str], ...] = (
+        ("cum_success", "last"),
+        ("pos_err", "nan"),
+        ("primal_residual", "nan"),
+    )
+    for key, fill in keys_fill:
+        present = [t[key] for t in trials if key in t]
+        if not present:
+            continue
+        stacked = np.stack(
+            [_pad_series(s, t_max, fill=fill) for s in present], axis=0
+        )
+        if fill == "nan":
+            out[f"{key}_mean"] = np.nanmean(stacked, axis=0)
+            out[f"{key}_std"] = np.nanstd(stacked, axis=0)
+        else:
+            out[f"{key}_mean"] = np.mean(stacked, axis=0)
+            out[f"{key}_std"] = np.std(stacked, axis=0)
+    return out
 
 
 def trial_metrics(run: Dict[str, Any]) -> Dict[str, Any]:

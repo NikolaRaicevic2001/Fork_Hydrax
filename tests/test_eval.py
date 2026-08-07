@@ -14,13 +14,17 @@ import pytest
 from oim.run_eval import (
     MEAN_LABEL,
     _describe,
+    _run_fields,
     _strip_common_prefix,
     averaged_fields,
     evaluate,
+    evaluate_step_curves,
     format_table,
     parse_filters,
+    validate_ablate,
 )
-from oim.utils.metrics import trial_metrics
+from oim.utils.eval_plots import plot_step_curves
+from oim.utils.metrics import step_series, trial_metrics
 
 
 def make_run(
@@ -33,24 +37,50 @@ def make_run(
     final_theta_err: float = 0.0,
     compute_time: float = 0.5,
     horizon: int = 16,
+    rho: Optional[float] = 10.0,
+    n_admm: Optional[int] = 4,
+    gamma: Optional[float] = 0.1,
+    consensus_alpha: Optional[float] = 1.0,
+    reach_at: Optional[int] = None,
+    primal_residual: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """A minimal run payload shaped like `oim.utils.results.save_run`.
 
     The object walks in a straight line along +x, ending `final_pos_err`
     from a goal at the origin, so `trial_metrics` sees a plausible series
-    rather than a constant.
+    rather than a constant. `reach_at` forces success from that step onward
+    by dropping the pose error below the tolerance.
     """
-    poses = [
-        [final_pos_err * (i + 1) / steps, 0.0, final_theta_err]
-        for i in range(steps)
-    ]
+    # Flat baselines record ADMM-only knobs as None, matching experiment.py.
+    if algorithm != "admm":
+        rho = n_admm = gamma = consensus_alpha = None
+        object_opt = None
+
+    poses = []
+    for i in range(steps):
+        if reach_at is not None and i + 1 >= reach_at:
+            poses.append([0.01, 0.0, 0.0])
+        else:
+            poses.append(
+                [final_pos_err * (i + 1) / steps, 0.0, final_theta_err]
+            )
+    dynamic: Dict[str, Any] = {
+        "object_pose": [[0.0, 0.0, final_theta_err], *poses],
+        "compute_time": [compute_time] * steps,
+    }
+    if algorithm == "admm":
+        dynamic["primal_residual"] = (
+            primal_residual
+            if primal_residual is not None
+            else [3.0 - 0.1 * i for i in range(steps)]
+        )
     return {
         "run": {
             "world": "3d",
             "task": task,
             "robot": "xarm6",
             "algorithm": algorithm,
-            "robot_opt": "mppi",
+            "robot_opt": "mppi" if algorithm == "admm" else None,
             "object_opt": object_opt,
             "seed": seed,
         },
@@ -60,13 +90,13 @@ def make_run(
             "control_dt": 0.05,
             "goal_pos_tol": 0.05,
             "goal_theta_tol": 0.05,
+            "rho": rho,
+            "n_admm": n_admm,
+            "gamma": gamma,
+            "consensus_alpha": consensus_alpha,
         },
         "static": {"goal": [0.0, 0.0, 0.0]},
-        # object_pose carries the initial condition too, hence steps + 1.
-        "dynamic": {
-            "object_pose": [[0.0, 0.0, final_theta_err], *poses],
-            "compute_time": [compute_time] * steps,
-        },
+        "dynamic": dynamic,
     }
 
 
@@ -309,7 +339,11 @@ def test_method_components_are_not_reported_as_averaged() -> None:
         make_run("t1", algorithm="mppi", object_opt=None, horizon=32),
     ]
     averaged = averaged_fields(runs, ("task",))
-    assert set(averaged) == {"horizon"}
+    assert "horizon" in averaged
+    assert "algorithm" not in averaged
+    assert "object_opt" not in averaged
+    assert "method" not in averaged
+    assert "robot_opt" not in averaged
 
 
 def test_long_value_lists_are_summarised_by_count() -> None:
@@ -326,3 +360,101 @@ def test_latex_marks_undefined_metrics_with_an_endash() -> None:
     table = format_table(evaluate(runs), ("task",), style="latex")
     assert " -- " in table
     assert " - " not in table
+
+
+def test_ablate_folds_field_into_method_label() -> None:
+    """`--ablate rho` makes each rho its own method row, not one average."""
+    runs = [
+        make_run("t1", rho=0.1, seed=0),
+        make_run("t1", rho=10.0, seed=1),
+        make_run("t1", algorithm="mppi", seed=2),
+    ]
+    summary = evaluate(runs, ablate=("rho",))
+    assert set(summary["t1"]) == {
+        "admm(mppi/mppi) rho=0.1",
+        "admm(mppi/mppi) rho=10.0",
+        "mppi",
+    }
+    assert summary["t1"]["admm(mppi/mppi) rho=0.1"]["n_trials"] == 1
+
+
+def test_ablate_is_excluded_from_averaged_fields() -> None:
+    """An ablated knob must not also be listed as silently averaged."""
+    runs = [
+        make_run("t1", rho=0.1, seed=0, horizon=16),
+        make_run("t1", rho=10.0, seed=1, horizon=32),
+    ]
+    averaged = averaged_fields(runs, ("task",), ablate=("rho",))
+    assert "rho" not in averaged
+    assert averaged["horizon"] == ["16", "32"]
+
+
+def test_filter_plus_ablate_pins_other_axes() -> None:
+    """Pinning n_admm leaves one method row per rho value only."""
+    runs = [
+        make_run("t1", rho=r, n_admm=n, seed=i)
+        for i, (r, n) in enumerate(
+            [(0.1, 4), (10.0, 4), (0.1, 8), (10.0, 8)]
+        )
+    ]
+    # Mimic --filter n_admm=4 by keeping only those runs.
+    pinned = [r for r in runs if r["hyperparameters"]["n_admm"] == 4]
+    summary = evaluate(pinned, ablate=("rho",))
+    assert set(summary["t1"]) == {
+        "admm(mppi/mppi) rho=0.1",
+        "admm(mppi/mppi) rho=10.0",
+    }
+
+
+def test_validate_ablate_rejects_unknown_fields() -> None:
+    """A typo'd ablate key fails before scoring."""
+    with pytest.raises(ValueError, match="ablate field"):
+        validate_ablate([make_run("t1")], ("not_a_field",))
+
+
+def test_cum_success_stays_one_after_early_reach() -> None:
+    """Once the goal is met, later steps remain successful."""
+    run = make_run("t1", steps=10, final_pos_err=0.9, reach_at=4)
+    series = step_series(run)
+    assert series["cum_success"][:3].tolist() == [0.0, 0.0, 0.0]
+    assert series["cum_success"][3:].tolist() == [1.0] * 7
+
+
+def test_aggregate_step_series_pads_early_success_with_last() -> None:
+    """A short successful trial still contributes 1.0 at later steps."""
+    short = make_run("t1", steps=4, reach_at=2, final_pos_err=0.9)
+    long = make_run("t1", steps=8, final_pos_err=0.9, seed=1)
+    curves = evaluate_step_curves([short, long], ablate=())
+    cell = curves["t1"]["admm(mppi/mppi)"]
+    # Short run reached at step 2; padded cum_success must stay 1.
+    assert cell["cum_success_mean"][-1] == pytest.approx(0.5)
+    assert len(cell["steps"]) == 8
+
+
+def test_plot_step_curves_smoke(tmp_path) -> None:  # noqa: ANN001
+    """`--plot` writes a PNG from tiny synthetic curves."""
+    runs = [
+        make_run("pusht3d_xarm6_open_table", rho=0.1, seed=0),
+        make_run("pusht3d_xarm6_open_table", rho=10.0, seed=1),
+        make_run("pusht3d_xarm6_shelf_gap", rho=0.1, seed=0),
+        make_run(
+            "pusht3d_xarm6_open_table", algorithm="mppi", seed=2
+        ),
+    ]
+    curves = evaluate_step_curves(runs, ablate=("rho",))
+    path = tmp_path / "ablation.png"
+    plot_step_curves(
+        curves,
+        str(path),
+        group_by=("task",),
+        ablate=("rho",),
+        filters={"n_admm": ["4"]},
+    )
+    assert path.is_file()
+    assert path.stat().st_size > 0
+
+
+def test_run_fields_skips_none_ablate_values_on_flat() -> None:
+    """Ablating rho must not rename a flat baseline to `mppi rho=None`."""
+    run = make_run("t1", algorithm="mppi")
+    assert _run_fields(run, ablate=("rho",))["method"] == "mppi"

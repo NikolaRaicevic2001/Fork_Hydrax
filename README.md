@@ -163,23 +163,32 @@ uv run python -m oim.run_launch --warp --set steps=50  # override `fixed:`
 ### Evaluation
 
 One block per task, one row per method, then a `Mean` block averaging each
-method over the tasks — the paper's table. **Everything not grouped on is
-averaged into the cell**, so a sweep over horizons, sample counts and seeds
-still gives one number per (task, method); whatever varied is printed above
-the table.
+method over the tasks — the paper's table. **Everything not grouped on and
+not ablated is averaged into the cell**, so a sweep over seeds still gives
+one number per (task, method). Whatever still varied is printed above the
+table; `--filter` pins a value, `--ablate` folds a field into the method
+label (e.g. `admm(mppi/mppi) rho=1.0`), and `--group-by` splits it into
+row blocks instead.
 
 ```bash
 uv run python -m oim.run_eval                          # every run
 uv run python -m oim.run_eval --format latex           # paper-ready tabular
 uv run python -m oim.run_eval --filter algorithm=admm,mppi
-uv run python -m oim.run_eval --group-by task horizon  # ablate a setting
+uv run python -m oim.run_eval --group-by task horizon  # split a setting into blocks
 uv run python -m oim.run_eval --pos-tol 0.02           # re-score, no re-running
+
+# Ablation: one method row per rho; pin the other ADMM knobs, optional curves
+uv run python -m oim.run_eval --ablate rho \
+    --filter n_admm=4 --filter gamma=0.1 --filter consensus_alpha=1.0 \
+    --format latex --plot
 ```
 
 | Flag | |
 | --- | --- |
 | `--filter KEY=A,B` | keep matching runs; repeatable. One field's values OR-ed, different fields AND-ed |
+| `--ablate FIELD …` | fold these fields into the method label so each value is its own row (pin the rest with `--filter`) |
 | `--group-by` | fields forming each block (default `task`). Methods are always the rows inside |
+| `--plot` | write a step-curve figure under `results/eval/` (cum SR, $\epsilon_d$, ADMM primal residual) |
 | `--pos-tol`, `--theta-tol` | re-score success against a new tolerance |
 | `--format` | `text` (default), `markdown`, `latex` |
 

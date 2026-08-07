@@ -14,17 +14,21 @@ over the tasks.
         --filter task=pusht3d_xarm6_open_table,pusht3d_xarm6_shelf_gap \
         --filter algorithm=admm,mppi
 
-    # ablate a swept setting: one block per (task, horizon) instead
+    # ablate a swept setting as method rows (pin the rest with --filter)
+    uv run python -m oim.run_eval --ablate rho \
+        --filter n_admm=4 --filter gamma=0.1 --format latex --plot
+
+    # split a setting into row blocks instead of method rows
     uv run python -m oim.run_eval --group-by task horizon
 
     # re-score old runs against a stricter success tolerance
     uv run python -m oim.run_eval --pos-tol 0.02 --theta-tol 0.02
 
-Everything not grouped on is *averaged into* the cell, never split across
-rows: a sweep over horizons, sample counts and seeds still yields one
-number per (task, method). Whatever varied is printed above the table, so a
-mixed cell is never silently reported as a clean one; `--filter` pins a
-value and `--group-by` splits on it instead.
+Everything not grouped on and not ablated is *averaged into* the cell.
+`--filter` pins a value, `--ablate` folds a field into the method label,
+and `--group-by` splits it into row blocks. Whatever still varies is
+printed above the table so a mixed cell is never silently reported as a
+clean one.
 
 Nothing here touches the simulator, JAX or MuJoCo: changing a metric, a
 tolerance, or how results are grouped costs a second, not a GPU-week. That
@@ -39,7 +43,12 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from oim import ROOT
-from oim.utils.metrics import aggregate_metrics, trial_metrics
+from oim.utils.metrics import (
+    aggregate_metrics,
+    aggregate_step_series,
+    step_series,
+    trial_metrics,
+)
 from oim.utils.results import RunName, load_run
 
 # Label of the block that averages each method over the row groups.
@@ -79,12 +88,17 @@ _LATEX_HEADERS = {
 }
 
 
-def _run_fields(run: Dict[str, Any]) -> Dict[str, Any]:
+def _run_fields(
+    run: Dict[str, Any], ablate: Sequence[str] = ()
+) -> Dict[str, Any]:
     """Flatten a run's identity and settings into one lookup table.
 
     Adds a derived `method` field -- the algorithm plus, for ADMM, its two
     block optimizers -- since that is what a table column compares and no
-    single recorded field carries it.
+    single recorded field carries it. Fields named in `ablate` are appended
+    as `key=value` so a sweep over e.g. `rho` becomes distinct method rows
+    rather than being averaged into one ADMM cell. Values of `None` are
+    skipped so a flat baseline stays `mppi` when ablating an ADMM-only knob.
     """
     fields = dict(run.get("run", {}))
     fields.update(run.get("hyperparameters", {}))
@@ -92,11 +106,19 @@ def _run_fields(run: Dict[str, Any]) -> Dict[str, Any]:
     robot_opt, object_opt = fields.get("robot_opt"), fields.get("object_opt")
     # Only a consensus algorithm has two blocks; a flat baseline records
     # `object_opt: None` and is named by its algorithm alone.
-    fields["method"] = (
+    method = (
         f"{algorithm}({robot_opt}/{object_opt})"
         if object_opt
         else str(algorithm)
     )
+    extras = [
+        f"{key}={fields[key]}"
+        for key in ablate
+        if key in fields and fields[key] is not None
+    ]
+    if extras:
+        method = f"{method} {' '.join(extras)}"
+    fields["method"] = method
     return fields
 
 
@@ -126,40 +148,47 @@ def parse_filters(items: Sequence[str]) -> Dict[str, Set[str]]:
     return dict(parsed)
 
 
-def _matches(run: Dict[str, Any], filters: Dict[str, Set[str]]) -> bool:
+def _matches(
+    run: Dict[str, Any],
+    filters: Dict[str, Set[str]],
+    ablate: Sequence[str] = (),
+) -> bool:
     """Whether a run is any of the accepted values for every filtered field.
 
     Within a field the values are OR-ed, across fields AND-ed -- so
     `--filter task=a,b --filter algorithm=admm` reads as "either task, but
     only ADMM".
     """
-    fields = _run_fields(run)
+    fields = _run_fields(run, ablate)
     return all(str(fields.get(k)) in values for k, values in filters.items())
 
 
 def averaged_fields(
-    runs: List[Dict[str, Any]], group_by: Sequence[str]
+    runs: List[Dict[str, Any]],
+    group_by: Sequence[str],
+    ablate: Sequence[str] = (),
 ) -> Dict[str, List[str]]:
-    """Settings that vary across `runs` but are not grouped on.
+    """Settings that vary across `runs` but are not grouped on or ablated.
 
     Every one of these is averaged into the cells rather than splitting
     them, which is the point of the table -- but it also means a cell can
     silently mix, say, two horizons. Reporting them alongside the table is
     what keeps that honest.
 
-    `algorithm`/`robot_opt`/`object_opt` are excluded: they vary across any
-    real comparison, but they are not averaged over -- they are exactly
-    what `method` splits the rows by.
+    `algorithm`/`robot_opt`/`object_opt` and every ablated field are
+    excluded: they vary across any real comparison, but they are not
+    averaged over -- they are exactly what `method` splits the rows by.
 
     Args:
         runs: Payloads from `oim.utils.results.load_run`.
         group_by: The fields forming the row groups.
+        ablate: Fields folded into the method label.
 
     Returns:
         `{field: sorted distinct values}`, for the fields that vary.
     """
-    fields = [_run_fields(r) for r in runs]
-    fixed = set(group_by) | _METHOD_FIELDS
+    fields = [_run_fields(r, ablate) for r in runs]
+    fixed = set(group_by) | _METHOD_FIELDS | set(ablate)
     out: Dict[str, List[str]] = {}
     for key in {k for f in fields for k in f}:
         if key in fixed:
@@ -202,6 +231,7 @@ def evaluate(
     runs: List[Dict[str, Any]],
     group_by: Sequence[str] = ("task",),
     shared_max_time: bool = True,
+    ablate: Sequence[str] = (),
 ) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Aggregate runs into one cell per (row group, method), plus `Mean`.
 
@@ -209,14 +239,17 @@ def evaluate(
         runs: Payloads from `oim.utils.results.load_run`.
         group_by: Fields forming each row group -- the table's left column.
             Default `("task",)`. `method` is always the inner dimension and
-            need not be listed. Any field not named here is averaged into
-            the cells; see `averaged_fields`.
+            need not be listed. Any field not named here (and not ablated)
+            is averaged into the cells; see `averaged_fields`.
         shared_max_time: Credit unsuccessful trials the slowest execution
             time *across every loaded run* rather than within their own
             cell. Keeps the T column comparable between methods: scored per
             cell, a method that fails quickly and consistently would be
             credited its own short worst case and beat one that nearly
             succeeded.
+        ablate: Fields folded into each run's method label so a sweep over
+            e.g. `rho` produces one method row per value instead of mixing
+            them.
 
     Returns:
         `{row label: {method: metrics}}`, row groups sorted, with
@@ -230,7 +263,7 @@ def evaluate(
 
     trials: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for run in runs:
-        fields = _run_fields(run)
+        fields = _run_fields(run, ablate)
         row = "/".join(str(fields.get(k)) for k in group_by)
         trials[(row, fields["method"])].append(trial_metrics(run))
 
@@ -258,6 +291,77 @@ def evaluate(
             for method, cells in sorted(by_method.items())
         }
     return out
+
+
+def evaluate_step_curves(
+    runs: List[Dict[str, Any]],
+    group_by: Sequence[str] = ("task",),
+    ablate: Sequence[str] = (),
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Aggregate per-step series into one cell per (row group, method).
+
+    Same grouping as `evaluate`, without a `Mean` block (curves do not
+    average across tasks). Used by `--plot`.
+
+    Args:
+        runs: Payloads from `oim.utils.results.load_run`.
+        group_by: Fields forming each row group.
+        ablate: Fields folded into the method label.
+
+    Returns:
+        `{row label: {method: aggregate_step_series output}}`.
+
+    Raises:
+        ValueError: If `runs` is empty.
+    """
+    if not runs:
+        raise ValueError("evaluate_step_curves needs at least one run")
+
+    trials: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    dts: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    for run in runs:
+        fields = _run_fields(run, ablate)
+        row = "/".join(str(fields.get(k)) for k in group_by)
+        key = (row, fields["method"])
+        trials[key].append(step_series(run))
+        dts[key].append(float(run["hyperparameters"]["control_dt"]))
+
+    table: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for (row, method), series in trials.items():
+        control_dt = dts[(row, method)][0]
+        table[row][method] = aggregate_step_series(series, control_dt)
+    return {
+        row: dict(sorted(methods.items()))
+        for row, methods in sorted(table.items())
+    }
+
+
+def _known_fields(runs: Sequence[Dict[str, Any]]) -> Set[str]:
+    """Union of keys available via `_run_fields` across `runs`."""
+    return {k for r in runs for k in _run_fields(r)}
+
+
+def validate_ablate(
+    runs: Sequence[Dict[str, Any]], ablate: Sequence[str]
+) -> None:
+    """Reject ablate keys no loaded run records.
+
+    Args:
+        runs: Loaded run payloads (before or after filtering).
+        ablate: Field names from `--ablate`.
+
+    Raises:
+        ValueError: If any ablate field is unknown.
+    """
+    if not ablate:
+        return
+    known = _known_fields(runs)
+    unknown = sorted(set(ablate) - known)
+    if unknown:
+        raise ValueError(
+            f"no run records the ablate field(s) {unknown}. "
+            f"Available: {sorted(known)}"
+        )
 
 
 def _strip_common_prefix(labels: Sequence[str]) -> Tuple[List[str], str]:
@@ -442,7 +546,7 @@ def load_runs(
     paths = sorted(glob.glob(os.path.join(runs_dir, "*.json")))
     loaded = [load_run(p) for p in paths]
     if filters:
-        known = {k for r in loaded for k in _run_fields(r)}
+        known = _known_fields(loaded)
         unknown = sorted(set(filters) - known)
         if unknown:
             raise ValueError(
@@ -488,8 +592,8 @@ def _describe(averaged: Dict[str, List[str]]) -> str:
     return ", ".join(parts)
 
 
-def main() -> None:
-    """Parse arguments, aggregate the runs, print and save the table."""
+def _build_parser() -> argparse.ArgumentParser:
+    """CLI for `python -m oim.run_eval`."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--runs-dir",
@@ -502,6 +606,15 @@ def main() -> None:
         default=["task"],
         help="Fields forming each row block (default: task). Methods are "
         "always the rows within a block; everything else is averaged in.",
+    )
+    p.add_argument(
+        "--ablate",
+        nargs="+",
+        default=[],
+        metavar="FIELD",
+        help="Fold these fields into the method label (e.g. rho) so each "
+        "value is its own row instead of being averaged. Pin other swept "
+        "axes with --filter.",
     )
     p.add_argument(
         "--filter",
@@ -521,55 +634,164 @@ def main() -> None:
         help="Table style for stdout and the saved file.",
     )
     p.add_argument(
+        "--plot",
+        action="store_true",
+        help="Write a step-curve figure (cum SR, eps_d, primal residual) "
+        "under --out-dir.",
+    )
+    p.add_argument(
         "--out-dir",
         default=os.path.join(ROOT, "results", "eval"),
-        help="Where to write the summary JSON and table.",
+        help="Where to write the summary JSON, table, and optional figure.",
     )
     p.add_argument("--no-save", action="store_true")
+    return p
+
+
+def _print_header(
+    runs: List[Dict[str, Any]],
+    summary: Dict[str, Dict[str, Dict[str, Any]]],
+    group_by: Sequence[str],
+    ablate: Sequence[str],
+    filters: Dict[str, Set[str]],
+    averaged: Dict[str, List[str]],
+) -> None:
+    """Print run counts, ablate/filter pins, and averaged-over warnings."""
+    n_rows = len([g for g in summary if g != MEAN_LABEL])
+    print(f"\n{len(runs)} runs -> {n_rows} {'/'.join(group_by)} groups")
+    if ablate:
+        print(f"ablate: {', '.join(ablate)}")
+    if filters:
+        print(
+            "filter: "
+            + ", ".join(
+                f"{k}={','.join(sorted(v))}" for k, v in sorted(filters.items())
+            )
+        )
+    if averaged:
+        print(f"averaged over: {_describe(averaged)}")
+
+
+def _maybe_plot(
+    runs: List[Dict[str, Any]],
+    group_by: Sequence[str],
+    ablate: Sequence[str],
+    filters: Dict[str, Set[str]],
+    out_dir: str,
+    stem: str,
+) -> Optional[str]:
+    """Write the step-curve figure when requested; return its path or None."""
+    from oim.utils.eval_plots import plot_step_curves  # noqa: PLC0415
+
+    curves = evaluate_step_curves(runs, group_by, ablate=ablate)
+    os.makedirs(out_dir, exist_ok=True)
+    plot_path = os.path.join(out_dir, f"{stem}.png")
+    plot_step_curves(
+        curves,
+        plot_path,
+        group_by=group_by,
+        ablate=ablate,
+        filters={k: sorted(v) for k, v in filters.items()},
+    )
+    print(f"\nsaved {plot_path}")
+    return plot_path
+
+
+def _save_outputs(
+    *,
+    out_dir: str,
+    stem: str,
+    runs_dir: str,
+    runs: List[Dict[str, Any]],
+    filters: Dict[str, Set[str]],
+    group_by: Sequence[str],
+    ablate: Sequence[str],
+    averaged: Dict[str, List[str]],
+    pos_tol: Optional[float],
+    theta_tol: Optional[float],
+    summary: Dict[str, Dict[str, Dict[str, Any]]],
+    table: str,
+    fmt: str,
+    plot_path: Optional[str],
+) -> None:
+    """Write the eval JSON and rendered table beside an optional plot."""
+    os.makedirs(out_dir, exist_ok=True)
+    json_path = os.path.join(out_dir, f"{stem}.json")
+    with open(json_path, "w") as f:
+        json.dump(
+            {
+                "runs_dir": runs_dir,
+                "n_runs": len(runs),
+                "filters": {k: sorted(v) for k, v in filters.items()},
+                "group_by": list(group_by),
+                "ablate": list(ablate),
+                "averaged_over": averaged,
+                "goal_pos_tol": pos_tol,
+                "goal_theta_tol": theta_tol,
+                "results": summary,
+                "plot": plot_path,
+            },
+            f,
+            indent=2,
+        )
+    ext = {"markdown": "md", "latex": "tex", "text": "txt"}[fmt]
+    table_path = os.path.join(out_dir, f"{stem}.{ext}")
+    with open(table_path, "w") as f:
+        f.write(table + "\n")
+    print(f"\nsaved {json_path}\nsaved {table_path}")
+
+
+def main() -> None:
+    """Parse arguments, aggregate the runs, print and save the table."""
+    p = _build_parser()
     args = p.parse_args()
 
     try:
         filters = parse_filters(args.filter)
         runs = load_runs(args.runs_dir, filters, args.pos_tol, args.theta_tol)
+        validate_ablate(runs, args.ablate)
     except (ValueError, FileNotFoundError) as e:
         p.error(str(e))
 
-    summary = evaluate(runs, args.group_by)
+    summary = evaluate(runs, args.group_by, ablate=args.ablate)
     table = format_table(summary, args.group_by, style=args.format)
-
-    n_rows = len([g for g in summary if g != MEAN_LABEL])
-    print(f"\n{len(runs)} runs -> {n_rows} {'/'.join(args.group_by)} groups")
-    averaged = averaged_fields(runs, args.group_by)
-    if averaged:
-        print(f"averaged over: {_describe(averaged)}")
+    averaged = averaged_fields(runs, args.group_by, ablate=args.ablate)
+    _print_header(
+        runs, summary, args.group_by, args.ablate, filters, averaged
+    )
     print()
     print(table)
 
+    name = RunName("eval")
+    stem = name()
+    plot_path = None
+    if args.plot:
+        plot_path = _maybe_plot(
+            runs,
+            args.group_by,
+            args.ablate,
+            filters,
+            args.out_dir,
+            stem,
+        )
     if args.no_save:
         return
-    os.makedirs(args.out_dir, exist_ok=True)
-    name = RunName("eval")
-    json_path = os.path.join(args.out_dir, f"{name()}.json")
-    with open(json_path, "w") as f:
-        json.dump(
-            {
-                "runs_dir": args.runs_dir,
-                "n_runs": len(runs),
-                "filters": {k: sorted(v) for k, v in filters.items()},
-                "group_by": list(args.group_by),
-                "averaged_over": averaged,
-                "goal_pos_tol": args.pos_tol,
-                "goal_theta_tol": args.theta_tol,
-                "results": summary,
-            },
-            f,
-            indent=2,
-        )
-    ext = {"markdown": "md", "latex": "tex", "text": "txt"}[args.format]
-    table_path = os.path.join(args.out_dir, f"{name()}.{ext}")
-    with open(table_path, "w") as f:
-        f.write(table + "\n")
-    print(f"\nsaved {json_path}\nsaved {table_path}")
+    _save_outputs(
+        out_dir=args.out_dir,
+        stem=stem,
+        runs_dir=args.runs_dir,
+        runs=runs,
+        filters=filters,
+        group_by=args.group_by,
+        ablate=args.ablate,
+        averaged=averaged,
+        pos_tol=args.pos_tol,
+        theta_tol=args.theta_tol,
+        summary=summary,
+        table=table,
+        fmt=args.format,
+        plot_path=plot_path,
+    )
 
 
 if __name__ == "__main__":
