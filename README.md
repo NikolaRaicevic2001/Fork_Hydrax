@@ -188,9 +188,9 @@ uv run python -m oim.run_eval --ablate rho \
 | `--filter KEY=A,B` | keep matching runs; repeatable. One field's values OR-ed, different fields AND-ed |
 | `--ablate FIELD …` | fold these fields into the method label so each value is its own row (pin the rest with `--filter`) |
 | `--group-by` | fields forming each block (default `task`). Methods are always the rows inside |
-| `--plot` | write a step-curve figure under `results/eval/` (cum SR, $\epsilon_d$, ADMM primal residual) |
+| `--plot` | write a step-curve figure under `results/eval/` ($\epsilon_d$, $\epsilon_\theta$, ADMM primal/dual residuals) |
 | `--pos-tol`, `--theta-tol` | re-score success against a new tolerance |
-| `--format` | `text` (default), `markdown`, `latex` |
+| `--format` | `text` (default), `markdown`, `latex`. A human-readable `.txt` is always written; this flag adds a second file when not `text` |
 
 | Column | Paper | |
 | --- | --- | --- |

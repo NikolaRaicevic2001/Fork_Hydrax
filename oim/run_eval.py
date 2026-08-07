@@ -631,13 +631,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--format",
         choices=["text", "markdown", "latex"],
         default="text",
-        help="Table style for stdout and the saved file.",
+        help="Extra table style to save beside the always-written .txt "
+        "(stdout always prints the human-readable text table).",
     )
     p.add_argument(
         "--plot",
         action="store_true",
-        help="Write a step-curve figure (cum SR, eps_d, primal residual) "
-        "under --out-dir.",
+        help="Write a step-curve figure (eps_d, eps_theta, primal/dual "
+        "residuals) under --out-dir.",
     )
     p.add_argument(
         "--out-dir",
@@ -711,10 +712,11 @@ def _save_outputs(
     theta_tol: Optional[float],
     summary: Dict[str, Dict[str, Dict[str, Any]]],
     table: str,
+    text_table: str,
     fmt: str,
     plot_path: Optional[str],
 ) -> None:
-    """Write the eval JSON and rendered table beside an optional plot."""
+    """Write the eval JSON, a human-readable `.txt` table, and `--format`."""
     os.makedirs(out_dir, exist_ok=True)
     json_path = os.path.join(out_dir, f"{stem}.json")
     with open(json_path, "w") as f:
@@ -734,11 +736,19 @@ def _save_outputs(
             f,
             indent=2,
         )
-    ext = {"markdown": "md", "latex": "tex", "text": "txt"}[fmt]
-    table_path = os.path.join(out_dir, f"{stem}.{ext}")
-    with open(table_path, "w") as f:
-        f.write(table + "\n")
-    print(f"\nsaved {json_path}\nsaved {table_path}")
+    # Always write a plain-text table so results are readable without LaTeX
+    # or markdown tooling; `--format` adds a second file when it differs.
+    text_path = os.path.join(out_dir, f"{stem}.txt")
+    with open(text_path, "w") as f:
+        f.write(text_table + "\n")
+    saved = [json_path, text_path]
+    if fmt != "text":
+        ext = {"markdown": "md", "latex": "tex"}[fmt]
+        table_path = os.path.join(out_dir, f"{stem}.{ext}")
+        with open(table_path, "w") as f:
+            f.write(table + "\n")
+        saved.append(table_path)
+    print("\n" + "\n".join(f"saved {p}" for p in saved))
 
 
 def main() -> None:
@@ -754,13 +764,20 @@ def main() -> None:
         p.error(str(e))
 
     summary = evaluate(runs, args.group_by, ablate=args.ablate)
-    table = format_table(summary, args.group_by, style=args.format)
+    text_table = format_table(summary, args.group_by, style="text")
+    table = (
+        text_table
+        if args.format == "text"
+        else format_table(summary, args.group_by, style=args.format)
+    )
     averaged = averaged_fields(runs, args.group_by, ablate=args.ablate)
     _print_header(
         runs, summary, args.group_by, args.ablate, filters, averaged
     )
     print()
-    print(table)
+    # Always show the human-readable table in the terminal; LaTeX/markdown
+    # stay in the saved files so the console stays scannable.
+    print(text_table)
 
     name = RunName("eval")
     stem = name()
@@ -789,6 +806,7 @@ def main() -> None:
         theta_tol=args.theta_tol,
         summary=summary,
         table=table,
+        text_table=text_table,
         fmt=args.format,
         plot_path=plot_path,
     )

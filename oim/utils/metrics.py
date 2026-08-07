@@ -50,14 +50,16 @@ def step_series(run: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """Per-step curves for ablation plots, length `steps_run`.
 
     `cum_success[t]` is 1 once both tolerances have been met at any step
-    `<= t` (and stays 1 after an early exit). `pos_err` comes from
-    `goal_errors`. `primal_residual` is present only for ADMM runs.
+    `<= t` (and stays 1 after an early exit). Goal errors come from
+    `goal_errors`. ADMM runs also carry `primal_residual` and
+    `dual_residual` when logged.
 
     Args:
         run: A payload from `oim.utils.results.load_run`.
 
     Returns:
-        `cum_success`, `pos_err`, and optionally `primal_residual`.
+        `cum_success`, `pos_err`, `theta_err`, and optionally the ADMM
+        residual series.
     """
     hp = run["hyperparameters"]
     err = goal_errors(run)
@@ -72,10 +74,12 @@ def step_series(run: Dict[str, Any]) -> Dict[str, np.ndarray]:
     out: Dict[str, np.ndarray] = {
         "cum_success": cum_success,
         "pos_err": np.asarray(pos_err, dtype=np.float64),
+        "theta_err": np.asarray(theta_err, dtype=np.float64),
     }
-    residual = run["dynamic"].get("primal_residual")
-    if residual is not None and len(residual) > 0:
-        out["primal_residual"] = np.asarray(residual, dtype=np.float64)[:steps]
+    for key in ("primal_residual", "dual_residual"):
+        residual = run["dynamic"].get(key)
+        if residual is not None and len(residual) > 0:
+            out[key] = np.asarray(residual, dtype=np.float64)[:steps]
     return out
 
 
@@ -107,9 +111,8 @@ def aggregate_step_series(
 ) -> Dict[str, Any]:
     """Mean ± std of aligned per-step series across trials.
 
-    Cumulative success pads with the last value; `pos_err` and
-    `primal_residual` pad with NaN and aggregate with `nanmean` /
-    `nanstd`.
+    Cumulative success pads with the last value; errors and residuals
+    pad with NaN and aggregate with `nanmean` / `nanstd`.
 
     Args:
         trials: `step_series` outputs for one (group, method) cell.
@@ -135,7 +138,9 @@ def aggregate_step_series(
     keys_fill: Tuple[Tuple[str, str], ...] = (
         ("cum_success", "last"),
         ("pos_err", "nan"),
+        ("theta_err", "nan"),
         ("primal_residual", "nan"),
+        ("dual_residual", "nan"),
     )
     for key, fill in keys_fill:
         present = [t[key] for t in trials if key in t]

@@ -74,6 +74,7 @@ def make_run(
             if primal_residual is not None
             else [3.0 - 0.1 * i for i in range(steps)]
         )
+        dynamic["dual_residual"] = [1.5 - 0.05 * i for i in range(steps)]
     return {
         "run": {
             "world": "3d",
