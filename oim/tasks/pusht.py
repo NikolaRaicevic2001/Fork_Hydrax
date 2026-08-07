@@ -279,14 +279,14 @@ class PushT(Task, ConsensusTask):
 
             # Robot-level cost weights (paper eq. 20).
             self.r_r = 0.05
-            self.w_ee, self.r0 = 20.0, 0.05
-            self.w_align, self.gamma0 = 5.0, jnp.cos(jnp.pi / 6)
+            self.w_ee, self.r0 = 40.0, 0.02
+            self.w_align, self.gamma0 = 15.0, jnp.cos(jnp.pi / 12)
             # w_tilt/w_tip_z: not in the paper, untuned, same order of
             # magnitude as w_align/w_ee. w_tilt raised from 5.0 now that
             # _tilt's sign bug is fixed (task 11/12) -- at 5.0 the tip still
             # averaged ~35 degrees off vertical.
-            self.w_tilt = 20.0
-            self.w_tip_z = 50.0
+            self.w_tilt = 30.0
+            self.w_tip_z = 8.0
             # Target tip height: the block's own resting z, read from the
             # model rather than hardcoded.
             self.tip_target_z = float(mj_model.body("block").pos[2])
