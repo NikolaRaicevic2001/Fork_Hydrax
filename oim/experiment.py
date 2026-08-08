@@ -53,6 +53,7 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 from oim import ROOT  # noqa: E402
+from oim.objects import wrap_angle  # noqa: E402
 from oim.sim2d import (  # noqa: E402
     PushT2D,
     build_admm_2d,
@@ -439,6 +440,35 @@ def _save(
     )
 
 
+def _goal_reached(task: Any, run_cfg: Dict[str, Any]) -> Any:
+    """A predicate for `run_interactive`: has the object reached the goal?
+
+    The same test the headless runners apply, against the same two
+    tolerances, so the viewer stops exactly where a `--headless` run of the
+    identical command would have recorded success -- rather than the two
+    disagreeing about what "done" means.
+
+    Args:
+        task: The `PushT` whose goal and block pose to read.
+        run_cfg: The config's `run` block, holding the tolerances.
+
+    Returns:
+        A callable taking `mujoco.MjData` and returning whether both
+        tolerances are met.
+    """
+    goal = np.asarray(task.goal)
+    pos_tol = float(run_cfg["goal_pos_tol"])
+    theta_tol = float(run_cfg["goal_theta_tol"])
+
+    def reached(mj_data: mujoco.MjData) -> bool:
+        pose = np.asarray(task._block_pose(mj_data))
+        pos_err = float(np.linalg.norm(pose[:2] - goal[:2]))
+        theta_err = abs(float(wrap_angle(pose[2] - goal[2])))
+        return pos_err < pos_tol and theta_err < theta_tol
+
+    return reached
+
+
 def _mjx_static(
     task: Any, robot: str, mj_model: mujoco.MjModel
 ) -> Dict[str, Any]:
@@ -557,6 +587,7 @@ def _run_3d(experiment: Experiment, args: argparse.Namespace) -> None:
             recording_prefix=name.stem,
             show_samples=args.show_samples,
             show_optimal=args.show_optimal,
+            terminate_fn=_goal_reached(task, run_cfg),
         )
         return
 

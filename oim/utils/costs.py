@@ -157,7 +157,9 @@ def cost_series(task: Any, log: Dict[str, Any]) -> Dict[str, np.ndarray]:
     if has_tip and hasattr(task, "w_tilt"):
         tilt = np.asarray(log["tip_tilt"])[:n]
         tip_z = np.asarray(log["tip_z"])[:n]
-        terms["tilt"] = task.w_tilt * tilt
+        # 1 - cos(psi), matching `PushT._tilt`. The log stores the angle
+        # because that is the readable unit; the cost is the cosine form.
+        terms["tilt"] = task.w_tilt * (1.0 - np.cos(tilt))
         terms["tip_z"] = task.w_tip_z * (tip_z - task.tip_target_z) ** 2
     elif hasattr(task, "w_obstacle_robot"):
         robot = np.asarray(log["robot_pos"])[1:][:n]

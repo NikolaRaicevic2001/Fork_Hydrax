@@ -1,43 +1,56 @@
-# Ablation: which ADMM knobs move performance vs flat MPPI.
-# Cartesian product; ADMM-only axes (n_admm/rho/gamma/consensus_alpha/opts)
-# collapse for mppi. ≈540 ADMM + 15 MPPI cells (~12–16 h with warp).
-# Slice with: python -m oim.run_launch --only rho=1.0 --dry-run
+# Flat-MPPI baseline: how well does MPPI alone do on all five xArm6 scenes,
+# and how much of that is the sampler budget.
 #
-# Not sweepable here (edit configs/xarm6.yaml or add an axis): temperature,
-# noise_level, costs, robot_num_knots, rho_torque.
+# 5 tasks x 3 horizons x 3 sample counts x 5 seeds = 225 cells, ~4 h with
+# warp. Measured on shelf_gap: 10 / 25 / 68 ms per control step at
+# 16x64 / 32x128 / 64x256, plus ~8 s to jit each cell (every cell
+# recompiles -- horizon and samples change the traced shapes). Cells that
+# reach the goal stop early, so 4 h is an upper bound.
+#
+# Slice it without editing this file:
+#   python -m oim.run_launch --only horizon=32 --only samples=128 --dry-run
+#
+# Not sweepable -- no CLI flag exists, so these come from
+# configs/xarm6.yaml and are fixed for the whole sweep: temperature (1.0),
+# noise_level (0.5), every cost weight, robot_num_knots, robot_spline.
 
 sweep:
-  # Difficulty span: free space → tight gap (high rot/trans) → within push ceiling.
+  # Every scene the xArm6 has an MJCF for, easiest to hardest. `clutter`
+  # is excluded: it is the point-mass scene, so its numbers would not be
+  # comparable with the rest.
   task:
-    - { script: open_table }
-    - { script: shelf_gap }
-    - { script: icra_sign }
+    - { script: open_table }       # 180 deg flip, no obstacles
+    - { script: single_obstacle }  # one cube on the direct path
+    - { script: shelf_gap }        # gap as wide as the T is long
+    - { script: ycb_clutter }      # cube + three YCB objects
+    - { script: icra_sign }        # C-block, 90 deg turn, seven glyphs
 
-  algorithm: [admm, mppi]
-  robot_opt: [mppi]
-  object_opt: [mppi]
+  algorithm: [mppi]
 
-  # Fixed at config (32 / 128). H↑ without more robot knots is confounded;
-  # samples↑ does little while MPPI ESS≈1 (temperature not a CLI axis).
-  horizon: []
-  samples: []
+  # The two knobs a flat baseline actually has. Config default is 32/128;
+  # both are bracketed one step each way to show whether the baseline is
+  # budget-limited or cost-limited.
+  horizon: [16, 32, 64]
+  samples: [64, 128, 256]
 
   # Core ADMM questions: does the loop help, how stiff is consensus,
   # does proximal / proposal EMA stabilize coordination?
-  n_admm: [1, 4, 8]
-  rho: [0.1, 1.0, 10.0]
-  gamma: [0.0, 0.1]
-  consensus_alpha: [0.5, 1.0]
+  n_admm: []
+  rho: []
+  gamma: []
+  consensus_alpha: []
 
-  # Seed already randomizes start/goal; leave these empty.
+  # Left empty: the seed already draws a start/goal pair per cell, and the
+  # run file records which. Sweeping them as axes would take the cartesian
+  # product of the two (25 problems/task) instead of pairing them.
   start: []
   goal: []
-  seed: [1]
+  seed: [0, 1, 2, 3, 4]
 
 fixed:
-  steps: 1000
+  steps: 2000       # the one success in a 9-run pilot landed at step 1274
   headless: true
   warp: true
-  record: true
-  show_samples: true
-  show_optimal: true  # logs object_plan/robot_plan (block disagreement)
+  no_plot: true     # 225 figures nobody reads; run_eval.py plots from the
+                    # run files afterwards
+  iterations: 1     # paper default; >1 is the iterations-vs-n_admm ablation

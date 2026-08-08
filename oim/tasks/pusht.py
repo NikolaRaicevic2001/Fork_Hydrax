@@ -483,37 +483,40 @@ class PushT(Task, ConsensusTask):
         return jnp.clip(raw, -scale, scale)
 
     def _tilt(self, state: mjx.Data) -> jax.Array:
-        """psi_tilt(R_ee): end-effector tilt from vertical (paper eq. 22).
+        """1 - cos(psi_tilt): the tip's z-axis away from world -z (eq. 22).
 
-        Angle between the tip site's z-axis and world -z (straight down --
-        the pushing stick's intended pointing direction): 0 when vertical
-        and correctly oriented, pi when upside down.
+        The tip site's z-axis is the stick's pointing direction, so -R_33 is
+        exactly the cosine between it and straight down. This returns
+        1 - cos(psi): 0 vertical, 1 horizontal, 2 inverted.
 
-        For `robot="point"` this is a constant pi, not zero: the pusher site
-        is unrotated, so its z-axis points *up* and there is no orientation
-        DOF that could change that. `w_tilt * pi` is therefore added
-        identically to every sample at every step, which cancels in the
-        cost differences every sampler here actually uses -- control is
-        unaffected, but a reported stage cost carries the offset.
+        Cosine rather than the angle. `arccos` is *linear* in psi, so its
+        restoring gradient is constant -- and measured over five 500-step
+        runs the tilt angle is a random walk that rises on 52-55% of steps
+        (total variation ~8 rad for a net drift of ~1.3). A constant
+        gradient cannot arrest a drift whose source is that psi >= 0 has a
+        reflecting boundary at zero, which is why raising `w_tilt` through
+        5, 20, 30 and 50 never fixed it: the weight was not the free
+        parameter, the functional form was. 1 - cos(psi) ~ psi^2/2 near
+        vertical, so it is slack where the tip is already nearly right and
+        stiffens as it leaves. It also avoids `arccos`'s unbounded
+        derivative at both poles.
 
-        A previous roll/pitch-based formula measured deviation from the
-        site's z-axis pointing *up*, so a correctly vertical, downward-
-        pointing stick scored ~180 degrees "tilt" instead of ~0 -- verified
-        directly against the reach-swept starting pose, whose site rotation
-        has z-axis world-frame component [0.41, -0.11, -0.90] (pointing
-        down) yet scored ~182 degrees under the old formula. `w_tilt` was
-        therefore driving the tip *away* from vertical, not toward it
-        (task 11/12).
+        For `robot="point"` this is a constant 2.0: the pusher site is
+        unrotated, so its z-axis points *up* and no DOF can change that.
+        The offset is identical across samples, so it cancels in the cost
+        differences every sampler uses -- control is unaffected, but a
+        reported stage cost carries it.
         """
-        return self.tilt_angle(state.site_xmat[self.trace_site_ids[0]])
+        return 1.0 + state.site_xmat[self.trace_site_ids[0]][2, 2]
 
     @staticmethod
     def tilt_angle(r_mat: jax.Array) -> jax.Array:
-        """psi_tilt from a tip-site rotation matrix, shape (3, 3).
+        """psi_tilt in radians, from a tip-site rotation matrix (3, 3).
 
-        Split out from `_tilt` so the cost breakdown in `oim.utils.costs`
-        can reuse it from a `mujoco.MjData` (whose `site_xmat` is flat)
-        without restating the formula and letting the two drift apart.
+        The *diagnostic* angle, not the cost: `oim/sim3d/run.py` logs it as
+        `tip_tilt` so a run file records tilt in readable units. The cost
+        `_tilt` uses is 1 - cos(psi), and `oim.utils.costs` recovers that
+        from this angle rather than storing it twice.
         """
         return jnp.arccos(jnp.clip(-r_mat[2, 2], -1.0, 1.0))
 

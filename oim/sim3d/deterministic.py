@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -36,6 +36,7 @@ def run_interactive(  # noqa: PLR0912, PLR0915
     recording_prefix: str = "simulation",
     show_samples: bool = False,
     show_optimal: bool = False,
+    terminate_fn: Optional[Callable[[mujoco.MjData], bool]] = None,
 ) -> None:
     """Run an interactive simulation with the MPC controller.
 
@@ -75,6 +76,14 @@ def run_interactive(  # noqa: PLR0912, PLR0915
             of `show_samples` -- either, both, or neither. Both off by
             default: when both are off, nothing here runs at all, so it
             cannot affect timing.
+        terminate_fn: Called with the simulator state after each control
+            step; returning True closes the viewer and returns. `None`
+            (the default) runs until the window is closed, which is what
+            every task without a notion of "done" wants -- a walker or a
+            humanoid is never finished. The headless runners in
+            `oim.sim3d.run` have this test built in against the task's goal
+            tolerances; this is the same idea for the viewer, kept as an
+            injected predicate so this function stays generic over tasks.
     """
     show_plans = show_samples or show_optimal
     # ADMM has a second block, in object-pose space, that no flat
@@ -310,6 +319,13 @@ def run_interactive(  # noqa: PLR0912, PLR0915
                     renderer.update_scene(mj_data, viewer.cam)
                     frame = renderer.render()
                     recorder.add_frame(frame.tobytes())
+
+            # Checked after the substeps, so the state tested is the one the
+            # step actually produced -- the same placement as the headless
+            # runners' own goal test.
+            if terminate_fn is not None and terminate_fn(mj_data):
+                print(f"\ngoal reached at t = {mj_data.time:.2f}s")
+                break
 
             # Try to run in roughly realtime
             elapsed = time.time() - start_time
