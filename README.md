@@ -974,11 +974,44 @@ fall back to [`config/cyclonedds.xml`](oim/real3d/config/cyclonedds.xml).
 
 On the **desktop**, three terminals:
 
-| Terminal | Command |
-| --- | --- |
-| robot bringup (`keti_ws` docker) | `ros2 launch main real_xarm6.launch.py` |
-| planner / driver (pixi env) | `python examples/pusht_real.py --dry-run --replan-rate 2.5 --steps 400` |
-| RViz (optional) | `rviz2 -d <config>.rviz` |
+**Terminal 1 - Real Robot Workspace:**
+```bash
+# Inside keti_ws
+./scripts/run_docker
+
+# Inside the container
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch main real_xarm6.launch.py
+```
+**Terminal 2 - planner / driver (pixi env):**
+```bash
+# In the repository directory (~/{workspace}/Object-Informed-Manipulation-MJX)
+cd oim/real3d
+pixi shell
+
+cd ../..
+# Without motion
+python examples/pusht_real.py --dry-run --replan-rate 2.5 --steps 400
+# With real motion
+python examples/pusht_real.py --replan-rate 2.5 --steps 400
+```
+
+**Terminal 3 - scene markers (optional):**
+```bash
+# In the repository directory
+cd oim/real3d && pixi shell
+cd ../.. && python oim/real3d/scripts/publish_scene_markers.py \
+    --scene-xml oim/models/xarm6_pusht_clutter_2/scene.xml \
+    --frame xarm_device \
+    --start 0.381,0.343,0  # Change these values by reading `ros2 run tf2_ros tf2_echo xarm_device fp_object_pose`
+```
+
+**Terminal 4 - RViz (optional):**
+```bash
+# In the repository directory
+rviz2 -d oim/real3d/scripts/real3d.rviz
+```
 
 The driver publishes to `velocity_controller/commands_nominal` by default,
 which feeds the **CBF safety filter** (`commands_nominal` → CBF node →
